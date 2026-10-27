@@ -14,28 +14,37 @@ Designed for users who actively juggle **1 to 3 remote desktop sessions** and wa
 | **Grey Letterbox Bars** on 16:10 / 3:2 laptop displays | **Zero-Bar Display Switcher**: Pitch-black OLED background + 1-click `Fit`, `Stretch`, and `Zoom` modes. |
 | **Heavy ARM64 Battery Drain** (Multiple tabs decoding 60fps in background) | **0% Background GPU Decode**: Power-gates the Qualcomm Adreno VPU when inactive. |
 | **Friction Switching Between 1–3 Hosts** | **Sub-35ms Warm Swap**: Instant hotkeys (`Ctrl+Alt+1..3`) and auto-hiding/pinned top notch. |
+| **Juggling Two Machines at Once** | **Cockpit 50/50 Dual Mode**: View two machines side-by-side with asymmetric power pacing. |
+| **3D CAD & Blender Viewports Colliding with Screen Edge** | **Relative Mouse Mode**: Infinite cursor rotation with fail-safe double-tap `Esc` breakout. |
 | **Annoying Clipboard Permission Prompts** | **Silent Scoped Auto-Grant**: Seamless text/code/image copy-paste strictly scoped to CRD. |
 | **Accidental Local Key Triggers (`Ctrl+Alt+Del`, `Win+L`)** | **Remote System Keys Flyout**: Direct CDP dispatch to remote host without locking your laptop. |
 | **Guessing Network Quality** | **Live Telemetry HUD**: Real-time RTT latency and FPS (`16ms · 60f`) with color-coded health dot. |
 
 ---
 
-## The Dynamic Island Top Notch (440px HUD)
+## The Dynamic Island Top Notch (470px HUD)
 
 ```text
        Top Edge of Snapdragon Display (0px Wasted Baseline)
 ────────────────────────────────────────────────────────────────────────────────
 [ Remote Tabs ]        [ The Top Notch: Center 30% ]          [ Remote Min/Close ]
   ┌────────────────────────────────────────────────────────────────────────┐
-  │ ● 16ms 60f │ [● Workstation]  [◐ Home Lab]  [○ Cloud] │ ⛶ Fit ⌨ 📌 ⚙ ✕ │
+  │ ● 16ms 60f │ [● Workstation]  [◐ Home Lab]  [○ Cloud] │ ◫ 🔒 ⛶ ⌨ 📌 ⚙ ✕ │
   └────────────────────────────────────────────────────────────────────────┘
 ```
 
 * **Live Telemetry Badge**: Real-time WebRTC round-trip time (RTT) and frame rate directly from the active connection.
-  * 🟢 **Green**: Latency < 35ms & $\ge$ 30 FPS (Excellent)
-  * 🟡 **Amber**: Latency 35–80ms (Moderate)
-  * 🔴 **Red**: Latency > 80ms (High latency / Jitter)
-* **Zero-Bar Display Switcher (`BtnDisplayMode`)**:
+  * 🟢 **Green**: Latency < 35ms & $\ge$ 30 FPS (Smooth connection).
+  * 🟡 **Amber**: Latency 35–80ms (Moderate latency).
+  * 🔴 **Red**: Latency > 80ms (High latency / Jitter).
+* **Cockpit 50/50 Split (`◫`)**:
+  * Toggles dual side-by-side view of Session 1 and Session 2.
+  * Separated by a 1px high-DPI subtle divider.
+  * Secondary pane runs with low-power memory target and audio solo on the focused pane.
+* **Relative Mouse Mode (`🔒`)**:
+  * Locks cursor and delivers raw delta coordinates for 3D modeling (Blender, Maya, CAD) and gaming.
+  * Double-tap `Esc` or press `Ctrl + Alt + Home` immediately breaks cursor lock and returns pointer control.
+* **Zero-Bar Display Switcher (`⛶ Fit`)**:
   * `⛶ Fit`: Preserves aspect ratio against pitch-black OLED background.
   * `↔ Stretch`: Fills 100% of vertical and horizontal display, eliminating all bars.
   * `🗖 Zoom`: Centers and scales video to eliminate letterbox margins without distortion.
@@ -62,13 +71,13 @@ When running on your Snapdragon laptop:
 
 | Shortcut | Action |
 | :--- | :--- |
-| **`Ctrl + Alt + 1`** | Instant jump to **Session 1** |
-| **`Ctrl + Alt + 2`** | Instant jump to **Session 2** |
-| **`Ctrl + Alt + 3`** | Instant jump to **Session 3** |
+| **`Ctrl + Alt + [1..3]`** | Instant jump to **Session 1, 2, or 3** |
 | **`Ctrl + Alt + Tab`** | Cycle forward to the next session |
+| **`Ctrl + Alt + C`** | Toggle **Cockpit 50/50 Dual View** |
+| **`Ctrl + Alt + M`** | Toggle **Relative Mouse Mode** (3D CAD/Blender/Gaming) |
 | **`Ctrl + Alt + D`** | Cycle Display Mode (`Fit` $\rightarrow$ `Stretch` $\rightarrow$ `Zoom`) |
 | **`Ctrl + Alt + S`** | Summon or dismiss the Top Notch Dock |
-| **`Ctrl + Alt + Home`** | Release pointer lock / return focus to local PC |
+| **`Ctrl + Alt + Home`** | Escape hatch: Release mouse cursor trap / pointer lock |
 | **`F11`** | Toggle borderless fullscreen mode |
 
 ---

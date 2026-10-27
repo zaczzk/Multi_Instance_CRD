@@ -1,5 +1,6 @@
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -29,6 +30,19 @@ public partial class MainWindow : Window
     private readonly Dictionary<int, ImageSource> _sessionThumbnails = new();
     private readonly string[] _displayModes = { "contain", "fill", "cover" };
     private int _displayModeIndex = 0; // 0 = Fit, 1 = Stretch, 2 = Zoom
+    private bool _isCockpitMode = false;
+    private int _cockpitSecondaryIndex = 2;
+    private bool _isRelativeMouseActive = false;
+    private DateTime _lastSwipeTime = DateTime.MinValue;
+
+    [DllImport("user32.dll")]
+    private static extern bool ClipCursor(ref RECT lpRect);
+
+    [DllImport("user32.dll")]
+    private static extern bool ClipCursor(IntPtr lpRect);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT { public int Left, Top, Right, Bottom; }
 
     public MainWindow()
     {
@@ -86,7 +100,18 @@ public partial class MainWindow : Window
 
     private void MainWindow_Closed(object? sender, EventArgs e)
     {
+        ReleaseCursor();
         _powerGovernor.Dispose();
+    }
+
+    protected override void OnDeactivated(EventArgs e)
+    {
+        base.OnDeactivated(e);
+        // Fail-safe: Always release Win32 cursor confinement if focus leaves window
+        if (_isRelativeMouseActive)
+        {
+            ReleaseCursor();
+        }
     }
 
     private void PowerGovernor_PowerSourceChanged(PowerSource source)
@@ -95,7 +120,7 @@ public partial class MainWindow : Window
         {
             if (source == PowerSource.Battery)
             {
-                // Snapdragon battery saving: enforce Eco-Warm and low memory target
+                // Snapdragon battery saving: enforce Eco-Warm on inactive
                 for (int i = 1; i <= 3; i++)
                 {
                     if (i != _currentSessionIndex)
@@ -110,7 +135,6 @@ public partial class MainWindow : Window
             }
             else
             {
-                // On AC power: restore normal memory target
                 for (int i = 1; i <= 3; i++)
                 {
                     var wv = GetWebViewByIndex(i);
@@ -137,6 +161,7 @@ public partial class MainWindow : Window
             "--disable-backgrounding-occluded-windows",
             "--disable-renderer-backgrounding",
             "--disable-features=IntensiveWakeUpThrottling,CalculateNativeWinOcclusion,FreezingOnBatterySaver,TabDiscarding",
+            "--disable-user-gesture-requirement-for-presentation",
             "--autoplay-policy=no-user-gesture-required",
             "--enable-features=PlatformHEVCDecoderSupport,WebRtcHideLocalIpsWithMdns",
             "--enable-gpu-rasterization",
@@ -167,7 +192,6 @@ public partial class MainWindow : Window
 
                 if (isCRD && args.PermissionKind == CoreWebView2PermissionKind.ClipboardRead)
                 {
-                    // Only grant read if this session is active
                     args.State = (_currentSessionIndex == index && IsActive)
                         ? CoreWebView2PermissionState.Allow
                         : CoreWebView2PermissionState.Deny;
@@ -230,6 +254,8 @@ public partial class MainWindow : Window
                 else if (msg == "CYCLE") CycleNextSession();
                 else if (msg == "TOGGLE_NOTCH") ToggleNotch();
                 else if (msg == "CYCLE_DISPLAY_MODE") CycleDisplayMode();
+                else if (msg == "TOGGLE_COCKPIT") ToggleCockpitMode();
+                else if (msg == "TOGGLE_RELATIVE_MOUSE") ToggleRelativeMouseMode();
                 else if (msg == "RELEASE_CURSOR") ReleaseCursor();
                 else if (msg != null && msg.StartsWith("HOST_NAME:"))
                 {
@@ -264,6 +290,8 @@ public partial class MainWindow : Window
                 else if (args.Key == Key.Tab) { CycleNextSession(); args.Handled = true; }
                 else if (args.Key == Key.S) { ToggleNotch(); args.Handled = true; }
                 else if (args.Key == Key.D) { CycleDisplayMode(); args.Handled = true; }
+                else if (args.Key == Key.C) { ToggleCockpitMode(); args.Handled = true; }
+                else if (args.Key == Key.M) { ToggleRelativeMouseMode(); args.Handled = true; }
                 else if (args.Key == Key.Home) { ReleaseCursor(); args.Handled = true; }
             }
         };
@@ -287,7 +315,6 @@ public partial class MainWindow : Window
             {
                 TxtTelemetry.Text = $"{rtt}ms {fps}f";
 
-                // Health Dot color
                 if (rtt < 35 && fps >= 30)
                 {
                     TelemetryHealthDot.Fill = (Brush)FindResource("AccentGreenBrush");
@@ -333,9 +360,18 @@ public partial class MainWindow : Window
         var currentView = GetWebViewByIndex(_currentSessionIndex);
         var targetView = GetWebViewByIndex(targetIndex);
 
+        if (_isCockpitMode)
+        {
+            // In cockpit mode, simply set focus and audio solo
+            _currentSessionIndex = targetIndex;
+            targetView?.Focus();
+            UpdateAudioMuteMatrix();
+            UpdateSlotStatusPills();
+            return;
+        }
+
         if (currentView?.CoreWebView2 != null && targetIndex != _currentSessionIndex)
         {
-            // Capture thumbnail preview immediately before pausing
             await CaptureSessionThumbnailAsync(_currentSessionIndex, currentView);
 
             if (_config.EfficiencyMode != WarmMode.LiveHot)
@@ -362,7 +398,20 @@ public partial class MainWindow : Window
         }
 
         _currentSessionIndex = targetIndex;
+        UpdateAudioMuteMatrix();
         UpdateSlotStatusPills();
+    }
+
+    private void UpdateAudioMuteMatrix()
+    {
+        for (int i = 1; i <= 3; i++)
+        {
+            var wv = GetWebViewByIndex(i);
+            if (wv?.CoreWebView2 == null) continue;
+
+            // Only currently active focused session outputs audio
+            wv.CoreWebView2.IsMuted = (i != _currentSessionIndex);
+        }
     }
 
     private void CycleNextSession()
@@ -404,6 +453,141 @@ public partial class MainWindow : Window
             UpdateLabelsFromConfig();
         }
     }
+
+    #region Precision Touchpad Gestures
+
+    private void Window_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        Point pos = e.GetPosition(this);
+        // Only trigger if cursor is within top 120px gesture strip
+        if (pos.Y > 120) return;
+
+        if (Keyboard.Modifiers == ModifierKeys.Shift && Math.Abs(e.Delta) >= 400)
+        {
+            if ((DateTime.Now - _lastSwipeTime).TotalMilliseconds > 600)
+            {
+                _lastSwipeTime = DateTime.Now;
+                if (e.Delta < 0) CycleNextSession();
+                else SwitchToSession(_currentSessionIndex == 1 ? 3 : _currentSessionIndex - 1);
+                e.Handled = true;
+            }
+        }
+    }
+
+    #endregion
+
+    #region Cockpit Split & Relative Mouse Modes
+
+    public async void ToggleCockpitMode()
+    {
+        _isCockpitMode = !_isCockpitMode;
+
+        if (_isCockpitMode)
+        {
+            ColDivider.Width = new GridLength(1);
+            ColRight.Width = new GridLength(1, GridUnitType.Star);
+            SplitDivider.Visibility = Visibility.Visible;
+            TxtSplitMode.Foreground = (Brush)FindResource("AccentGreenBrush");
+
+            // Left Column = Current Session
+            Grid.SetColumn(GetWebViewByIndex(_currentSessionIndex), 0);
+            GetWebViewByIndex(_currentSessionIndex).Visibility = Visibility.Visible;
+
+            // Right Column = Secondary Session
+            _cockpitSecondaryIndex = _currentSessionIndex == 1 ? 2 : 1;
+            var secondaryView = GetWebViewByIndex(_cockpitSecondaryIndex);
+            Grid.SetColumn(secondaryView, 2);
+            secondaryView.Visibility = Visibility.Visible;
+
+            if (secondaryView.CoreWebView2 != null)
+            {
+                // Secondary view in low memory target to preserve battery
+                secondaryView.CoreWebView2.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
+                await secondaryView.CoreWebView2.ExecuteScriptAsync("window.__crdResumeSession && window.__crdResumeSession();");
+                await secondaryView.CoreWebView2.ExecuteScriptAsync("window.dispatchEvent(new Event('resize'));");
+            }
+
+            var primaryView = GetWebViewByIndex(_currentSessionIndex);
+            if (primaryView.CoreWebView2 != null)
+            {
+                await primaryView.CoreWebView2.ExecuteScriptAsync("window.dispatchEvent(new Event('resize'));");
+            }
+        }
+        else
+        {
+            ColDivider.Width = new GridLength(0);
+            ColRight.Width = new GridLength(0);
+            SplitDivider.Visibility = Visibility.Collapsed;
+            TxtSplitMode.Foreground = new SolidColorBrush(Color.FromRgb(204, 204, 221));
+
+            for (int i = 1; i <= 3; i++)
+            {
+                var wv = GetWebViewByIndex(i);
+                Grid.SetColumn(wv, 0);
+                wv.Visibility = (i == _currentSessionIndex) ? Visibility.Visible : Visibility.Collapsed;
+            }
+
+            var primaryView = GetWebViewByIndex(_currentSessionIndex);
+            if (primaryView.CoreWebView2 != null)
+            {
+                primaryView.CoreWebView2.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Normal;
+                await primaryView.CoreWebView2.ExecuteScriptAsync("window.dispatchEvent(new Event('resize'));");
+            }
+        }
+
+        UpdateAudioMuteMatrix();
+    }
+
+    private void BtnSplitMode_Click(object sender, RoutedEventArgs e) => ToggleCockpitMode();
+
+    public async void ToggleRelativeMouseMode()
+    {
+        _isRelativeMouseActive = !_isRelativeMouseActive;
+        var wv = GetWebViewByIndex(_currentSessionIndex);
+
+        if (_isRelativeMouseActive)
+        {
+            TxtRelativeMouse.Foreground = (Brush)FindResource("AccentGreenBrush");
+            if (wv?.CoreWebView2 != null)
+            {
+                // Dispatch synthetic click to ensure user gesture context, then request PointerLock
+                string cdpClick = "{\"type\":\"mousePressed\",\"x\":10,\"y\":10,\"button\":\"left\",\"clickCount\":1}";
+                await wv.CoreWebView2.CallDevToolsProtocolMethodAsync("Input.dispatchMouseEvent", cdpClick);
+                cdpClick = "{\"type\":\"mouseReleased\",\"x\":10,\"y\":10,\"button\":\"left\",\"clickCount\":1}";
+                await wv.CoreWebView2.CallDevToolsProtocolMethodAsync("Input.dispatchMouseEvent", cdpClick);
+
+                await wv.CoreWebView2.ExecuteScriptAsync("window.__crdEnterPointerLock && window.__crdEnterPointerLock();");
+            }
+
+            // Lock cursor within client window
+            var p1 = PointToScreen(new Point(0, 0));
+            var p2 = PointToScreen(new Point(ActualWidth, ActualHeight));
+            RECT rect = new RECT { Left = (int)p1.X, Top = (int)p1.Y, Right = (int)p2.X, Bottom = (int)p2.Y };
+            ClipCursor(ref rect);
+        }
+        else
+        {
+            ReleaseCursor();
+        }
+    }
+
+    public async void ReleaseCursor()
+    {
+        _isRelativeMouseActive = false;
+        TxtRelativeMouse.Foreground = new SolidColorBrush(Color.FromRgb(204, 204, 221));
+        ClipCursor(IntPtr.Zero);
+
+        var wv = GetWebViewByIndex(_currentSessionIndex);
+        if (wv?.CoreWebView2 != null)
+        {
+            await wv.CoreWebView2.ExecuteScriptAsync("window.__crdExitPointerLock && window.__crdExitPointerLock();");
+        }
+        ShowNotch();
+    }
+
+    private void BtnRelativeMouse_Click(object sender, RoutedEventArgs e) => ToggleRelativeMouseMode();
+
+    #endregion
 
     #region Thumbnail Peek Hover
 
@@ -463,7 +647,10 @@ public partial class MainWindow : Window
         var wv = GetWebViewByIndex(_currentSessionIndex);
         if (wv?.CoreWebView2 != null)
         {
+            // First try CRD internal button
             await wv.CoreWebView2.ExecuteScriptAsync("window.__crdSendCtrlAltDel && window.__crdSendCtrlAltDel();");
+            // Also send CDP key chord with guaranteed modifier release
+            await SendCdpKeyChordAsync(wv, 0x2E, "Delete", "Delete", 3); // 1=Alt, 2=Ctrl -> 3
         }
     }
 
@@ -481,18 +668,10 @@ public partial class MainWindow : Window
     {
         SystemKeysPopup.IsOpen = false;
         var wv = GetWebViewByIndex(_currentSessionIndex);
-        if (wv?.CoreWebView2 != null)
+        if (wv != null)
         {
-            // Inject Win+D via CDP
-            await wv.CoreWebView2.CallDevToolsProtocolMethodAsync("Input.dispatchKeyEvent", 
-                "{\"type\":\"rawKeyDown\",\"windowsVirtualKeyCode\":91,\"key\":\"Meta\",\"code\":\"MetaLeft\",\"modifiers\":4}");
-            await wv.CoreWebView2.CallDevToolsProtocolMethodAsync("Input.dispatchKeyEvent", 
-                "{\"type\":\"rawKeyDown\",\"windowsVirtualKeyCode\":68,\"key\":\"d\",\"code\":\"KeyD\",\"modifiers\":4}");
-            await Task.Delay(50);
-            await wv.CoreWebView2.CallDevToolsProtocolMethodAsync("Input.dispatchKeyEvent", 
-                "{\"type\":\"keyUp\",\"windowsVirtualKeyCode\":68,\"key\":\"d\",\"code\":\"KeyD\",\"modifiers\":4}");
-            await wv.CoreWebView2.CallDevToolsProtocolMethodAsync("Input.dispatchKeyEvent", 
-                "{\"type\":\"keyUp\",\"windowsVirtualKeyCode\":91,\"key\":\"Meta\",\"code\":\"MetaLeft\",\"modifiers\":0}");
+            // Inject Win+D via CDP with guaranteed release block
+            await SendCdpKeyChordAsync(wv, 68, "d", "KeyD", 4); // 4 = Meta/Win
         }
     }
 
@@ -500,26 +679,28 @@ public partial class MainWindow : Window
     {
         SystemKeysPopup.IsOpen = false;
         var wv = GetWebViewByIndex(_currentSessionIndex);
-        if (wv?.CoreWebView2 != null)
+        if (wv != null)
         {
             // Inject Ctrl+Shift+Esc via CDP (modifiers: 2=Ctrl, 8=Shift -> 10)
-            await wv.CoreWebView2.CallDevToolsProtocolMethodAsync("Input.dispatchKeyEvent", 
-                "{\"type\":\"rawKeyDown\",\"windowsVirtualKeyCode\":27,\"key\":\"Escape\",\"code\":\"Escape\",\"modifiers\":10}");
-            await Task.Delay(50);
-            await wv.CoreWebView2.CallDevToolsProtocolMethodAsync("Input.dispatchKeyEvent", 
-                "{\"type\":\"keyUp\",\"windowsVirtualKeyCode\":27,\"key\":\"Escape\",\"code\":\"Escape\",\"modifiers\":0}");
+            await SendCdpKeyChordAsync(wv, 27, "Escape", "Escape", 10);
         }
     }
 
-    private async void ReleaseCursor()
+    private async Task SendCdpKeyChordAsync(WebView2 wv, int virtualKeyCode, string key, string code, int modifiers)
     {
-        var wv = GetWebViewByIndex(_currentSessionIndex);
-        if (wv?.CoreWebView2 != null)
+        if (wv?.CoreWebView2 == null) return;
+        try
         {
-            await wv.CoreWebView2.ExecuteScriptAsync("window.__crdExitPointerLock && window.__crdExitPointerLock();");
+            await wv.CoreWebView2.CallDevToolsProtocolMethodAsync("Input.dispatchKeyEvent", 
+                $"{{\"type\":\"rawKeyDown\",\"windowsVirtualKeyCode\":{virtualKeyCode},\"key\":\"{key}\",\"code\":\"{code}\",\"modifiers\":{modifiers}}}");
+            await Task.Delay(40);
         }
-        ShowNotch();
-        Focus();
+        finally
+        {
+            // Unconditionally dispatch keyUp and flush modifiers
+            await wv.CoreWebView2.CallDevToolsProtocolMethodAsync("Input.dispatchKeyEvent", 
+                $"{{\"type\":\"keyUp\",\"windowsVirtualKeyCode\":{virtualKeyCode},\"key\":\"{key}\",\"code\":\"{code}\",\"modifiers\":0}}");
+        }
     }
 
     private void BtnReleaseMouse_Click(object sender, RoutedEventArgs e)
@@ -636,6 +817,14 @@ public partial class MainWindow : Window
                     break;
                 case Key.D:
                     CycleDisplayMode();
+                    e.Handled = true;
+                    break;
+                case Key.C:
+                    ToggleCockpitMode();
+                    e.Handled = true;
+                    break;
+                case Key.M:
+                    ToggleRelativeMouseMode();
                     e.Handled = true;
                     break;
                 case Key.Home:

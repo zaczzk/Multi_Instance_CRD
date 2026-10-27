@@ -9,6 +9,7 @@
         Background="#000000"
         Focusable="True"
         KeyDown="Window_KeyDown"
+        PreviewMouseWheel="Window_PreviewMouseWheel"
         TextOptions.TextFormattingMode="Display"
         TextOptions.TextRenderingMode="ClearType"
         UseLayoutRounding="True" SnapsToDevicePixels="True">
@@ -40,11 +41,23 @@
     </Window.Resources>
 
     <Grid x:Name="RootGrid" Background="#000000">
-        <!-- 1. WebRTC Remote Viewports (Zero Wasted Space - 100% Full Bleed) -->
+        <!-- 1. Dual-Column WebRTC Container (Cockpit Split 50/50 Ready) -->
         <Grid x:Name="WebViewContainer" Background="#000000">
-            <wv2:WebView2 x:Name="WebViewSession1" Visibility="Visible"/>
-            <wv2:WebView2 x:Name="WebViewSession2" Visibility="Collapsed"/>
-            <wv2:WebView2 x:Name="WebViewSession3" Visibility="Collapsed"/>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition x:Name="ColLeft" Width="*"/>
+                <ColumnDefinition x:Name="ColDivider" Width="0"/>
+                <ColumnDefinition x:Name="ColRight" Width="0"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Session 1 -->
+            <wv2:WebView2 x:Name="WebViewSession1" Grid.Column="0" Visibility="Visible"/>
+
+            <!-- 1px High-DPI Split Divider -->
+            <Border x:Name="SplitDivider" Grid.Column="1" Background="#26FFFFFF" Visibility="Collapsed"/>
+
+            <!-- Session 2 & 3 -->
+            <wv2:WebView2 x:Name="WebViewSession2" Grid.Column="0" Visibility="Collapsed"/>
+            <wv2:WebView2 x:Name="WebViewSession3" Grid.Column="0" Visibility="Collapsed"/>
         </Grid>
 
         <!-- 2. Invisible Top Hover Trigger Area (Center 340px, 8px high) -->
@@ -58,7 +71,7 @@
 
         <!-- 3. The Top Notch Dynamic HUD (Elastic Island) -->
         <Border x:Name="TopNotch"
-                Width="440" Height="44"
+                Width="470" Height="44"
                 HorizontalAlignment="Center"
                 VerticalAlignment="Top"
                 Background="{StaticResource NotchBackgroundBrush}"
@@ -120,31 +133,43 @@
 
                 <!-- Right: QoL Tools & Window Controls -->
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <!-- Cockpit 50/50 Split Toggle -->
+                    <Button x:Name="BtnSplitMode" Style="{StaticResource PillButtonStyle}" Click="BtnSplitMode_Click" 
+                            ToolTip="Toggle Cockpit 50/50 Split (Ctrl+Alt+C)" Padding="4,2">
+                        <TextBlock x:Name="TxtSplitMode" Text="◫" FontSize="11" Foreground="#CCD"/>
+                    </Button>
+
+                    <!-- Relative Mouse Lock Toggle -->
+                    <Button x:Name="BtnRelativeMouse" Style="{StaticResource PillButtonStyle}" Click="BtnRelativeMouse_Click" 
+                            ToolTip="Toggle Relative Mouse for 3D/CAD (Ctrl+Alt+M)" Padding="4,2">
+                        <TextBlock x:Name="TxtRelativeMouse" Text="🔒" FontSize="10.5" Foreground="#CCD"/>
+                    </Button>
+
                     <!-- Display Mode Selector [Fit / Stretch / Zoom] -->
                     <Button x:Name="BtnDisplayMode" Style="{StaticResource PillButtonStyle}" Click="BtnDisplayMode_Click" 
-                            ToolTip="Display Mode: Fit (Ctrl+Alt+D)" Padding="5,2">
-                        <TextBlock x:Name="TxtDisplayMode" Text="⛶ Fit" FontSize="10.5" FontWeight="SemiBold" Foreground="#CCD"/>
+                            ToolTip="Display Mode: Fit (Ctrl+Alt+D)" Padding="4,2">
+                        <TextBlock x:Name="TxtDisplayMode" Text="⛶ Fit" FontSize="10" FontWeight="SemiBold" Foreground="#CCD"/>
                     </Button>
 
                     <!-- Remote System Keys Flyout -->
                     <Button x:Name="BtnSystemKeys" Style="{StaticResource PillButtonStyle}" Click="BtnSystemKeys_Click" 
-                            ToolTip="Remote System Keys" Padding="5,2">
+                            ToolTip="Remote System Keys (Macros)" Padding="4,2">
                         <TextBlock Text="⌨" FontSize="11"/>
                     </Button>
 
                     <!-- Pin / Auto-Hide Toggle -->
                     <Button x:Name="BtnPin" Style="{StaticResource PillButtonStyle}" Click="BtnPin_Click" 
-                            ToolTip="Toggle Pin / Auto-hide" Padding="5,2">
+                            ToolTip="Toggle Pin / Auto-hide" Padding="4,2">
                         <TextBlock x:Name="TxtPin" Text="📌" FontSize="10"/>
                     </Button>
 
                     <!-- Settings Button -->
-                    <Button Style="{StaticResource PillButtonStyle}" Click="BtnSettings_Click" ToolTip="Settings (Ctrl+Alt+S)" Padding="5,2">
+                    <Button Style="{StaticResource PillButtonStyle}" Click="BtnSettings_Click" ToolTip="Settings (Ctrl+Alt+S)" Padding="4,2">
                         <TextBlock Text="⚙" FontSize="11"/>
                     </Button>
 
                     <!-- Close Button -->
-                    <Button Style="{StaticResource PillButtonStyle}" Click="BtnClose_Click" ToolTip="Close" Padding="5,2">
+                    <Button Style="{StaticResource PillButtonStyle}" Click="BtnClose_Click" ToolTip="Close" Padding="4,2">
                         <TextBlock Text="✕" FontSize="11" Foreground="#FF6B6B"/>
                     </Button>
                 </StackPanel>
@@ -205,7 +230,7 @@
                     <Button Style="{StaticResource FlyoutMenuItemStyle}" Click="BtnReleaseMouse_Click">
                         <Grid Width="188">
                             <TextBlock Text="Release Cursor" HorizontalAlignment="Left" FontSize="11.5" Foreground="#FF9E9E"/>
-                            <TextBlock Text="Esc" HorizontalAlignment="Right" Foreground="#70FFFFFF" FontSize="10.5"/>
+                            <TextBlock Text="Esc Esc" HorizontalAlignment="Right" Foreground="#70FFFFFF" FontSize="10.5"/>
                         </Grid>
                     </Button>
                 </StackPanel>
@@ -247,7 +272,7 @@
 
                         <!-- Session 3 Config -->
                         <TextBlock Text="Session 3 Name &amp; URL:" Foreground="#DDD" FontWeight="SemiBold" Margin="0,0,0,4"/>
-                        <TextBox x:Name="TxtName3" Text="Session 3" Background="#2A2A2A" Foreground="White" BorderBrush="#444" Padding="6,4" Margin="0,0,0,4"/>
+                        <TextBox x:Name="TxtName3" Text="Session 3" Background="#2A2A2A" Foreground="White" BorderBrush="#444" Padding="6,4" Margin="0,0,0,14"/>
                         <TextBox x:Name="TxtUrl3" Text="https://remotedesktop.google.com/access" Background="#2A2A2A" Foreground="#BBB" BorderBrush="#444" Padding="6,4" Margin="0,0,0,14"/>
 
                         <Separator Background="#333" Margin="0,4,0,14"/>
@@ -256,6 +281,8 @@
                         <TextBlock Text="Keyboard Shortcuts:" FontWeight="SemiBold" Foreground="#DDD" Margin="0,0,0,6"/>
                         <TextBlock Text="• Ctrl + Alt + [1..3]  : Jump directly to Session 1, 2, or 3" Foreground="#999" FontSize="11" Margin="0,1"/>
                         <TextBlock Text="• Ctrl + Alt + Tab   : Cycle to next active session" Foreground="#999" FontSize="11" Margin="0,1"/>
+                        <TextBlock Text="• Ctrl + Alt + C     : Toggle Cockpit 50/50 Dual View" Foreground="#999" FontSize="11" Margin="0,1"/>
+                        <TextBlock Text="• Ctrl + Alt + M     : Toggle Relative Mouse for 3D/CAD/Games" Foreground="#999" FontSize="11" Margin="0,1"/>
                         <TextBlock Text="• Ctrl + Alt + D     : Cycle Display Mode (Fit / Stretch / Zoom)" Foreground="#999" FontSize="11" Margin="0,1"/>
                         <TextBlock Text="• Ctrl + Alt + S     : Toggle Top Notch Dock" Foreground="#999" FontSize="11" Margin="0,1"/>
                         <TextBlock Text="• Ctrl + Alt + Home  : Release mouse lock / return to local host" Foreground="#999" FontSize="11" Margin="0,1"/>

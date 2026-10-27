@@ -130,14 +130,13 @@
 
     // 7. Screen Mismatch / Grey Bars Killer & Display Mode Switcher
     window.__crdScreenFit = {
-        currentMode: 'contain', // 'contain' | 'fill' | 'cover'
+        currentMode: 'contain',
 
         setMode: function (mode) {
             this.currentMode = mode;
             const video = document.querySelector('video');
             const container = document.querySelector('.desktop-viewport, .video-container') || document.body;
 
-            // Pitch-black OLED background
             document.body.style.setProperty('background-color', '#000000', 'important');
             if (container) {
                 container.style.setProperty('background-color', '#000000', 'important');
@@ -157,7 +156,6 @@
                     video.style.setProperty('min-width', '100vw', 'important');
                     video.style.setProperty('min-height', '100vh', 'important');
                 } else {
-                    // contain
                     video.style.setProperty('max-width', '100vw', 'important');
                     video.style.setProperty('max-height', '100vh', 'important');
                 }
@@ -167,7 +165,36 @@
         }
     };
 
-    // 8. Remote System Key Handlers
+    // 8. Relative Mouse Mode (Pointer Lock for 3D CAD/Blender/Gaming)
+    window.__crdEnterPointerLock = function () {
+        const target = document.querySelector('.desktop-viewport, canvas, video') || document.body;
+        if (target && target.requestPointerLock) {
+            target.requestPointerLock();
+        }
+    };
+
+    window.__crdExitPointerLock = function () {
+        if (document.exitPointerLock && document.pointerLockElement) {
+            document.exitPointerLock();
+        }
+    };
+
+    // Double-Tap Escape Failsafe (reaches C# even when PointerLock is active)
+    let lastEscTime = 0;
+    window.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && document.pointerLockElement) {
+            const now = Date.now();
+            if (now - lastEscTime < 350) {
+                window.__crdExitPointerLock();
+                window.chrome?.webview?.postMessage('RELEASE_CURSOR');
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            lastEscTime = now;
+        }
+    }, true);
+
+    // 9. Remote System Key Handlers
     window.__crdSendCtrlAltDel = function () {
         const cadButton = document.querySelector('[data-qa-id="send-ctrl-alt-del"], #send-ctrl-alt-del');
         if (cadButton) {
@@ -192,13 +219,7 @@
         return false;
     };
 
-    window.__crdExitPointerLock = function () {
-        if (document.exitPointerLock) {
-            document.exitPointerLock();
-        }
-    };
-
-    // 9. Auto-detect connected host machine name and report to wrapper
+    // 10. Auto-detect connected host machine name and report to wrapper
     window.__lastReportedHostName = '';
     setInterval(function () {
         try {
@@ -221,7 +242,7 @@
         } catch (e) {}
     }, 2000);
 
-    // 10. Auto-reconnect watchdog (catches disconnect/reboot modal)
+    // 11. Auto-reconnect watchdog (catches disconnect/reboot modal)
     setInterval(function () {
         try {
             const reconnectBtn = document.querySelector('[data-qa-id="reconnect-button"], .reconnect-button');
@@ -232,7 +253,7 @@
         } catch (e) {}
     }, 2500);
 
-    // 11. In-page accelerator key forwarding bridge via WebMessage
+    // 12. In-page accelerator key forwarding bridge via WebMessage
     window.addEventListener('keydown', function (e) {
         if (e.ctrlKey && e.altKey) {
             if (e.key === '1') {
@@ -253,6 +274,12 @@
             } else if (e.key === 'd' || e.key === 'D') {
                 window.chrome?.webview?.postMessage('CYCLE_DISPLAY_MODE');
                 e.preventDefault(); e.stopPropagation();
+            } else if (e.key === 'c' || e.key === 'C') {
+                window.chrome?.webview?.postMessage('TOGGLE_COCKPIT');
+                e.preventDefault(); e.stopPropagation();
+            } else if (e.key === 'm' || e.key === 'M') {
+                window.chrome?.webview?.postMessage('TOGGLE_RELATIVE_MOUSE');
+                e.preventDefault(); e.stopPropagation();
             } else if (e.key === 'Home') {
                 window.__crdExitPointerLock();
                 window.chrome?.webview?.postMessage('RELEASE_CURSOR');
@@ -261,7 +288,7 @@
         }
     }, true);
 
-    // 12. Injected CSS for 0px wasted space & OLED Pitch-Black letterbox
+    // 13. Injected CSS for 0px wasted space & OLED Pitch-Black letterbox
     function injectZeroWasteStyles() {
         const styleId = 'crd-lightweight-zero-waste';
         if (document.getElementById(styleId)) return;
