@@ -1,0 +1,27 @@
+# Build results
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+dist/
+dist-standalone/
+
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Visual Studio / Rider cache
+.vs/
+.idea/
+*.DotSettings.user
+
+# WebView2 Runtime User Data
+User Data/
+EBWebView/
+*.userData
+
+# Local runtime settings
+sessions.local.json
