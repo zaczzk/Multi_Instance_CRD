@@ -42,7 +42,7 @@
                 <DropShadowEffect BlurRadius="18" Direction="270" RenderingBias="Quality" ShadowDepth="4" Opacity="0.45"/>
             </Border.Effect>
             <Border.RenderTransform>
-                <TranslateTransform x:Name="NotchTransform" Y="-46"/>
+                <TranslateTransform x:Name="NotchTransform" Y="0"/>
             </Border.RenderTransform>
 
             <Grid Margin="10,0">
@@ -85,6 +85,9 @@
 
                 <!-- Right: Settings & Window Controls -->
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button x:Name="BtnPin" Style="{StaticResource PillButtonStyle}" Click="BtnPin_Click" ToolTip="Toggle Pin / Auto-hide" Padding="6,2">
+                        <TextBlock x:Name="TxtPin" Text="📌" FontSize="11"/>
+                    </Button>
                     <Button Style="{StaticResource PillButtonStyle}" Click="BtnSettings_Click" ToolTip="Settings (Ctrl+Alt+S)" Padding="6,2">
                         <TextBlock Text="⚙" FontSize="12"/>
                     </Button>

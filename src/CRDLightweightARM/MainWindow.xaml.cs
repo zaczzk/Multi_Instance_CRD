@@ -17,7 +17,8 @@ public partial class MainWindow : Window
     private int _currentSessionIndex = 1;
     private readonly DispatcherTimer _dwellTimer;
     private readonly DispatcherTimer _collapseDebounceTimer;
-    private bool _isNotchVisible = false;
+    private bool _isNotchVisible = true;
+    private bool _isPinned = true;
     private readonly string _mediatorScript;
 
     public MainWindow()
@@ -113,6 +114,22 @@ public partial class MainWindow : Window
         // Inject Warm Swap mediator script into every frame and page
         await webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(_mediatorScript);
 
+        // Auto-detect connected machine name from document title
+        webView.CoreWebView2.DocumentTitleChanged += (s, args) =>
+        {
+            var title = webView.CoreWebView2.DocumentTitle;
+            if (!string.IsNullOrWhiteSpace(title))
+            {
+                var cleaned = title.Replace("- Chrome Remote Desktop", "")
+                                   .Replace("Chrome Remote Desktop", "")
+                                   .Trim();
+                if (!string.IsNullOrEmpty(cleaned) && cleaned != "Access" && cleaned != "Computers")
+                {
+                    Dispatcher.Invoke(() => UpdateSessionName(index, cleaned));
+                }
+            }
+        };
+
         // 1. WebMessage bridge for DOM-level shortcut events
         webView.WebMessageReceived += (s, args) =>
         {
@@ -124,6 +141,14 @@ public partial class MainWindow : Window
                 else if (msg == "SWITCH_3") SwitchToSession(3);
                 else if (msg == "CYCLE") CycleNextSession();
                 else if (msg == "TOGGLE_NOTCH") ToggleNotch();
+                else if (msg != null && msg.StartsWith("HOST_NAME:"))
+                {
+                    var name = msg.Substring("HOST_NAME:".Length).Trim();
+                    if (!string.IsNullOrEmpty(name))
+                    {
+                        Dispatcher.Invoke(() => UpdateSessionName(index, name));
+                    }
+                }
             }
             catch
             {
@@ -240,6 +265,17 @@ public partial class MainWindow : Window
         LabelSession3.Text = _config.Sessions.FirstOrDefault(s => s.Index == 3)?.Name ?? "Session 3";
     }
 
+    private void UpdateSessionName(int index, string name)
+    {
+        var session = _config.Sessions.FirstOrDefault(s => s.Index == index);
+        if (session != null)
+        {
+            session.Name = name;
+            _config.Save();
+            UpdateLabelsFromConfig();
+        }
+    }
+
     #region Top Notch Hover & Animation
 
     private void TopHoverTrigger_MouseEnter(object sender, MouseEventArgs e)
@@ -266,7 +302,10 @@ public partial class MainWindow : Window
 
     private void TopNotch_MouseLeave(object sender, MouseEventArgs e)
     {
-        _collapseDebounceTimer.Start();
+        if (!_isPinned)
+        {
+            _collapseDebounceTimer.Start();
+        }
     }
 
     private void CollapseDebounceTimer_Tick(object? sender, EventArgs e)
@@ -357,6 +396,14 @@ public partial class MainWindow : Window
     private void BtnSession1_Click(object sender, RoutedEventArgs e) => SwitchToSession(1);
     private void BtnSession2_Click(object sender, RoutedEventArgs e) => SwitchToSession(2);
     private void BtnSession3_Click(object sender, RoutedEventArgs e) => SwitchToSession(3);
+
+    private void BtnPin_Click(object sender, RoutedEventArgs e)
+    {
+        _isPinned = !_isPinned;
+        TxtPin.Text = _isPinned ? "📌" : "▲";
+        if (!_isPinned) HideNotch();
+        else ShowNotch();
+    }
 
     private void BtnSettings_Click(object sender, RoutedEventArgs e)
     {

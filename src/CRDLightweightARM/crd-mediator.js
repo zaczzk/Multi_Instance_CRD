@@ -47,7 +47,30 @@
         }
     };
 
-    // 5. In-page accelerator key forwarding bridge via WebMessage
+    // 5. Auto-detect connected host machine name and report to wrapper
+    window.__lastReportedHostName = '';
+    setInterval(function () {
+        try {
+            let hostName = '';
+            if (document.title && !document.title.includes('Chrome Remote Desktop') && !document.title.includes('Access')) {
+                hostName = document.title.replace('- Chrome Remote Desktop', '').trim();
+            }
+            if (!hostName) {
+                const headerEl = document.querySelector('.session-name, .host-name, [data-qa-id="host-name"]');
+                if (headerEl && headerEl.textContent) {
+                    hostName = headerEl.textContent.trim();
+                }
+            }
+            if (hostName && hostName !== window.__lastReportedHostName) {
+                window.__lastReportedHostName = hostName;
+                if (window.chrome && window.chrome.webview) {
+                    window.chrome.webview.postMessage('HOST_NAME:' + hostName);
+                }
+            }
+        } catch (e) {}
+    }, 2000);
+
+    // 6. In-page accelerator key forwarding bridge via WebMessage
     window.addEventListener('keydown', function (e) {
         if (e.ctrlKey && e.altKey) {
             if (e.key === '1') {
