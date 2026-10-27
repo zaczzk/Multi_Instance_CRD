@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
@@ -26,7 +27,8 @@ public partial class MainWindow : Window
     private readonly string _mediatorScript;
 
     // QoL Features State
-    private readonly SnapdragonPowerGovernor _powerGovernor = new();
+    private readonly WindowsPowerGovernor _powerGovernor = new();
+    private readonly TrayIconHelper _trayIcon = new();
     private readonly Dictionary<int, ImageSource> _sessionThumbnails = new();
     private readonly string[] _displayModes = { "contain", "fill", "cover" };
     private int _displayModeIndex = 0; // 0 = Fit, 1 = Stretch, 2 = Zoom
@@ -34,6 +36,42 @@ public partial class MainWindow : Window
     private int _cockpitSecondaryIndex = 2;
     private bool _isRelativeMouseActive = false;
     private DateTime _lastSwipeTime = DateTime.MinValue;
+    private bool _isExplicitExit = false;
+    private HwndSource? _hwndSource;
+
+    private const int HOTKEY_SUMMON_ID = 9001;
+    private const int HOTKEY_SUMMON_FALLBACK_ID = 9002;
+    private const uint MOD_ALT = 0x0001;
+    private const uint MOD_CONTROL = 0x0002;
+    private const uint MOD_SHIFT = 0x0004;
+    private const uint MOD_NOREPEAT = 0x4000;
+    private const uint VK_R = 0x52;
+    private const uint VK_F12 = 0x7B;
+    private const int WM_HOTKEY = 0x0312;
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr lpdwProcessId);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
     [DllImport("user32.dll")]
     private static extern bool ClipCursor(ref RECT lpRect);
@@ -81,6 +119,7 @@ public partial class MainWindow : Window
         _collapseDebounceTimer.Tick += CollapseDebounceTimer_Tick;
 
         Loaded += MainWindow_Loaded;
+        Closing += MainWindow_Closing;
         Closed += MainWindow_Closed;
     }
 
@@ -88,6 +127,24 @@ public partial class MainWindow : Window
     {
         _powerGovernor.Initialize(this);
         _powerGovernor.PowerSourceChanged += PowerGovernor_PowerSourceChanged;
+
+        var handle = new WindowInteropHelper(this).EnsureHandle();
+        _hwndSource = HwndSource.FromHwnd(handle);
+        _hwndSource?.AddHook(HwndMessageHook);
+
+        _trayIcon.Initialize(this, "Chrome Remote Desktop (Lightweight)");
+        _trayIcon.LeftClick += ToggleWindowVisibility;
+        _trayIcon.RightClick += ShowTrayContextMenu;
+        _trayIcon.DoubleClick += ToggleWindowVisibility;
+
+        if (_config.GlobalHotkeyEnabled)
+        {
+            bool ok = RegisterHotKey(handle, HOTKEY_SUMMON_ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_R);
+            if (!ok)
+            {
+                RegisterHotKey(handle, HOTKEY_SUMMON_FALLBACK_ID, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_F12);
+            }
+        }
 
         UpdateLabelsFromConfig();
         await InitializeWebViewEnvironmentAsync();
@@ -98,9 +155,48 @@ public partial class MainWindow : Window
         SwitchToSession(1);
     }
 
+    private IntPtr HwndMessageHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == WM_HOTKEY)
+        {
+            int id = wParam.ToInt32();
+            if (id == HOTKEY_SUMMON_ID || id == HOTKEY_SUMMON_FALLBACK_ID)
+            {
+                ToggleWindowVisibility();
+                handled = true;
+            }
+        }
+        else
+        {
+            _trayIcon.HandleHwndMessage(msg, wParam, lParam);
+        }
+        return IntPtr.Zero;
+    }
+
+    private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        if (!_isExplicitExit && _config.MinimizeToTrayOnClose)
+        {
+            e.Cancel = true;
+            HideToTray();
+            _trayIcon.ShowNotification("CRD Standby", "Minimized to System Tray. Press Ctrl+Alt+R to summon.");
+        }
+        else
+        {
+            _trayIcon.Dispose();
+        }
+    }
+
     private void MainWindow_Closed(object? sender, EventArgs e)
     {
         ReleaseCursor();
+        var handle = new WindowInteropHelper(this).Handle;
+        if (handle != IntPtr.Zero)
+        {
+            UnregisterHotKey(handle, HOTKEY_SUMMON_ID);
+            UnregisterHotKey(handle, HOTKEY_SUMMON_FALLBACK_ID);
+        }
+        _trayIcon.Dispose();
         _powerGovernor.Dispose();
     }
 
@@ -165,7 +261,8 @@ public partial class MainWindow : Window
             "--autoplay-policy=no-user-gesture-required",
             "--enable-features=PlatformHEVCDecoderSupport,WebRtcHideLocalIpsWithMdns",
             "--enable-gpu-rasterization",
-            "--enable-zero-copy"
+            "--enable-zero-copy",
+            "--use-angle=d3d11"
         });
 
         var options = new CoreWebView2EnvironmentOptions(browserArgs);
@@ -176,6 +273,7 @@ public partial class MainWindow : Window
     {
         if (_webViewEnvironment == null) return;
 
+        webView.DefaultBackgroundColor = System.Drawing.Color.Black;
         await webView.EnsureCoreWebView2Async(_webViewEnvironment);
 
         // Inject Warm Swap mediator script into every frame and page
@@ -330,6 +428,152 @@ public partial class MainWindow : Window
             });
         }
         catch {}
+    }
+
+    public void ForceForegroundActivate()
+    {
+        var handle = new WindowInteropHelper(this).EnsureHandle();
+        IntPtr foregroundHwnd = GetForegroundWindow();
+        uint foregroundThreadId = GetWindowThreadProcessId(foregroundHwnd, IntPtr.Zero);
+        uint currentThreadId = GetCurrentThreadId();
+
+        if (foregroundThreadId != currentThreadId && foregroundThreadId != 0)
+        {
+            AttachThreadInput(currentThreadId, foregroundThreadId, true);
+            ShowWindow(handle, 9); // SW_RESTORE
+            SetForegroundWindow(handle);
+            AttachThreadInput(currentThreadId, foregroundThreadId, false);
+        }
+        else
+        {
+            ShowWindow(handle, 9);
+            SetForegroundWindow(handle);
+        }
+
+        Activate();
+        Focus();
+    }
+
+    public void ToggleWindowVisibility()
+    {
+        if (Visibility == Visibility.Visible && WindowState != WindowState.Minimized && IsActive)
+        {
+            HideToTray();
+        }
+        else
+        {
+            RestoreFromTray();
+        }
+    }
+
+    public async void HideToTray()
+    {
+        var wv = GetWebViewByIndex(_currentSessionIndex);
+        if (wv?.CoreWebView2 != null)
+        {
+            await wv.CoreWebView2.ExecuteScriptAsync("window.__crdPauseSession && window.__crdPauseSession();");
+        }
+
+        for (int i = 1; i <= 3; i++)
+        {
+            var sessionWv = GetWebViewByIndex(i);
+            if (sessionWv?.CoreWebView2 != null)
+            {
+                sessionWv.CoreWebView2.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
+            }
+        }
+
+        Visibility = Visibility.Hidden;
+        ShowInTaskbar = false;
+        _trayIcon.UpdateTooltip($"CRD (Warm Standby) - {GetSessionName(_currentSessionIndex)}");
+    }
+
+    public async void RestoreFromTray()
+    {
+        ShowInTaskbar = true;
+        Visibility = Visibility.Visible;
+        WindowState = WindowState.Maximized;
+
+        ForceForegroundActivate();
+
+        var wv = GetWebViewByIndex(_currentSessionIndex);
+        if (wv?.CoreWebView2 != null)
+        {
+            wv.CoreWebView2.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Normal;
+            await wv.CoreWebView2.ExecuteScriptAsync("window.__crdResumeSession && window.__crdResumeSession();");
+        }
+
+        _trayIcon.UpdateTooltip($"CRD (Active) - {GetSessionName(_currentSessionIndex)}");
+    }
+
+    private void ShowTrayContextMenu()
+    {
+        var menu = new ContextMenu
+        {
+            Background = (Brush)FindResource("NotchBackgroundBrush"),
+            BorderBrush = (Brush)FindResource("NotchBorderBrush"),
+            BorderThickness = new Thickness(1),
+            Foreground = (Brush)FindResource("TextPrimaryBrush")
+        };
+
+        var headerItem = new MenuItem
+        {
+            Header = "Chrome Remote Desktop (Lightweight)",
+            IsEnabled = false,
+            Foreground = (Brush)FindResource("TextSecondaryBrush"),
+            FontWeight = FontWeights.Bold
+        };
+        menu.Items.Add(headerItem);
+        menu.Items.Add(new Separator { Background = (Brush)FindResource("NotchBorderBrush") });
+
+        var itemShow = new MenuItem { Header = "🗖 Show / Restore Client (Ctrl+Alt+R)", Foreground = Brushes.White };
+        itemShow.Click += (s, e) => RestoreFromTray();
+        menu.Items.Add(itemShow);
+
+        menu.Items.Add(new Separator { Background = (Brush)FindResource("NotchBorderBrush") });
+
+        for (int i = 1; i <= 3; i++)
+        {
+            int slot = i;
+            var name = GetSessionName(slot);
+            var itemSlot = new MenuItem
+            {
+                Header = $"{(slot == _currentSessionIndex ? "●" : "○")} Slot {slot}: {name}",
+                Foreground = (slot == _currentSessionIndex) ? (Brush)FindResource("AccentGreenBrush") : Brushes.White
+            };
+            itemSlot.Click += (s, e) =>
+            {
+                RestoreFromTray();
+                SwitchToSession(slot);
+            };
+            menu.Items.Add(itemSlot);
+        }
+
+        menu.Items.Add(new Separator { Background = (Brush)FindResource("NotchBorderBrush") });
+
+        var itemSettings = new MenuItem { Header = "⚙ Settings...", Foreground = Brushes.White };
+        itemSettings.Click += (s, e) =>
+        {
+            RestoreFromTray();
+            BtnSettings_Click(this, new RoutedEventArgs());
+        };
+        menu.Items.Add(itemSettings);
+
+        var itemExit = new MenuItem { Header = "✕ Disconnect All & Exit", Foreground = new SolidColorBrush(Color.FromRgb(255, 100, 100)) };
+        itemExit.Click += (s, e) =>
+        {
+            _isExplicitExit = true;
+            _trayIcon.Dispose();
+            Application.Current.Shutdown();
+        };
+        menu.Items.Add(itemExit);
+
+        menu.IsOpen = true;
+    }
+
+    private string GetSessionName(int index)
+    {
+        return _config.Sessions.FirstOrDefault(s => s.Index == index)?.Name ?? $"Session {index}";
     }
 
     private async Task CaptureSessionThumbnailAsync(int sessionIndex, WebView2 webView)

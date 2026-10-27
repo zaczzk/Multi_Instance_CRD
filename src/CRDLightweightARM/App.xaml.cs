@@ -9,6 +9,8 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        ProcessJobTracker.Initialize();
+
         const string appName = "CRDLightweightARM_SingleInstanceMutex";
         _mutex = new Mutex(true, appName, out bool createdNew);
 

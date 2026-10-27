@@ -26,6 +26,8 @@ public class AppConfig
     public int NotchDwellMs { get; set; } = 220;
     public bool EnforceNativeDpi { get; set; } = true;
     public bool StartFullscreen { get; set; } = true;
+    public bool MinimizeToTrayOnClose { get; set; } = true;
+    public bool GlobalHotkeyEnabled { get; set; } = true;
 
     public List<SessionItem> Sessions { get; set; } = new()
     {

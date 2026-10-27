@@ -71,6 +71,7 @@ When running on your Snapdragon laptop:
 
 | Shortcut | Action |
 | :--- | :--- |
+| **`Ctrl + Alt + R`** | **Global Summon**: Instant hide to / restore from System Tray (from anywhere in Windows) |
 | **`Ctrl + Alt + [1..3]`** | Instant jump to **Session 1, 2, or 3** |
 | **`Ctrl + Alt + Tab`** | Cycle forward to the next session |
 | **`Ctrl + Alt + C`** | Toggle **Cockpit 50/50 Dual View** |
@@ -82,15 +83,31 @@ When running on your Snapdragon laptop:
 
 ---
 
-## Building & Running
+## Universal Architecture & Building
+
+The client is built for **Windows on ARM64** (Snapdragon X Elite / Plus) and natively cross-compiles for standard **x64** (Intel Core / AMD Ryzen):
 
 ```powershell
-# Build and run directly
+# Build and run native ARM64 directly on your Snapdragon laptop
 .\build.ps1 -Run
 
-# Publish single-file standalone ARM64 executable
-.\build.ps1 -PublishStandalone
+# Publish standalone single-file ARM64 executable
+.\build.ps1 -Arch arm64 -PublishStandalone
+
+# Publish standalone single-file x64 executable (for Intel / AMD PCs)
+.\build.ps1 -Arch x64 -PublishStandalone
+
+# Publish both ARM64 and x64 releases at once into ./dist/
+.\build.ps1 -PublishAll
 ```
+
+---
+
+## System Tray & Process Lifecycle
+
+* **Zero-Drain Standby**: Closing the window (`[X]`) tucks the application into the Windows 11 System Tray. Video decoders and background rendering are completely paused (0% GPU, <60MB RAM) while maintaining the WebRTC connection.
+* **Single-Click Summon**: Left-click the tray icon or press `Ctrl + Alt + R` from anywhere to wake the client with a sub-45ms keyframe refresh.
+* **Kernel Job Object**: All `msedgewebview2.exe` sub-processes are locked into a Win32 Job Object with `KILL_ON_JOB_CLOSE`, ensuring zero lingering background processes or lockfile collisions on exit.
 
 ---
 

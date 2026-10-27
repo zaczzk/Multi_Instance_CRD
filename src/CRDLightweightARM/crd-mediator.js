@@ -102,8 +102,11 @@
             const video = document.querySelector('video');
             if (video && video.srcObject) {
                 window.__crdMediaStream = video.srcObject;
+                if (window.__crdMediaStream.getVideoTracks) {
+                    window.__crdMediaStream.getVideoTracks().forEach(t => { t.enabled = false; });
+                }
                 video.srcObject = null;
-                console.log('[CRD-ARM] Session paused: video sink detached, Adreno decode 0%');
+                console.log('[CRD-ARM] Session paused: video sink detached, decode 0%');
             }
         } catch (err) {
             console.error('[CRD-ARM] Error pausing session:', err);
@@ -115,6 +118,9 @@
         try {
             const video = document.querySelector('video');
             if (window.__crdMediaStream && video) {
+                if (window.__crdMediaStream.getVideoTracks) {
+                    window.__crdMediaStream.getVideoTracks().forEach(t => { t.enabled = true; });
+                }
                 video.srcObject = window.__crdMediaStream;
                 try {
                     await video.play();
