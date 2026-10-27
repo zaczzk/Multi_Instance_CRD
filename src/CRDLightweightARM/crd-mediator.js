@@ -5,20 +5,103 @@
     try {
         Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
         Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+    } catch (e) {}
+
+    // 2. WebRTC PeerConnection Interception for Real-Time Telemetry (RTT, FPS, Codec)
+    window.__crdActivePeer = null;
+    try {
+        const OriginalRTCPeerConnection = window.RTCPeerConnection;
+        window.RTCPeerConnection = function (config, constraints) {
+            const pc = new OriginalRTCPeerConnection(config, constraints);
+            window.__crdActivePeer = pc;
+            pc.addEventListener('connectionstatechange', () => {
+                if (window.chrome?.webview) {
+                    window.chrome.webview.postMessage('CONN_STATE:' + pc.connectionState);
+                }
+            });
+            return pc;
+        };
+        window.RTCPeerConnection.prototype = OriginalRTCPeerConnection.prototype;
     } catch (e) {
-        // Ignore if already defined
+        console.warn('[CRD-ARM] WebRTC hook warning:', e);
     }
 
-    // 2. Cache reference for WebRTC MediaStream
+    // 3. Telemetry Monitor (Polls every 1500ms without Oryon CPU core wakeups)
+    window.__crdStatsMonitor = {
+        timerId: null,
+        lastFramesDecoded: 0,
+        lastTimestamp: 0,
+
+        start: function () {
+            if (this.timerId) return;
+            this.timerId = setInterval(() => this.poll(), 1500);
+        },
+
+        stop: function () {
+            if (this.timerId) {
+                clearInterval(this.timerId);
+                this.timerId = null;
+            }
+        },
+
+        poll: async function () {
+            const pc = window.__crdActivePeer;
+            if (!pc || pc.connectionState !== 'connected') return;
+
+            try {
+                const stats = await pc.getStats();
+                let rtt = -1;
+                let fps = 0;
+                let codec = 'H.264';
+
+                stats.forEach(report => {
+                    if (report.type === 'candidate-pair' && (report.selected || report.nominated)) {
+                        if (report.currentRoundTripTime !== undefined) {
+                            rtt = Math.round(report.currentRoundTripTime * 1000);
+                        }
+                    }
+                    if (report.type === 'inbound-rtp' && report.kind === 'video') {
+                        const now = report.timestamp;
+                        const decoded = report.framesDecoded || 0;
+                        if (this.lastTimestamp > 0 && now > this.lastTimestamp) {
+                            const deltaFrames = decoded - this.lastFramesDecoded;
+                            const deltaSec = (now - this.lastTimestamp) / 1000;
+                            fps = Math.max(0, Math.round(deltaFrames / deltaSec));
+                        }
+                        this.lastFramesDecoded = decoded;
+                        this.lastTimestamp = now;
+
+                        if (report.codecId) {
+                            const codecReport = stats.get(report.codecId);
+                            if (codecReport && codecReport.mimeType) {
+                                codec = codecReport.mimeType.replace('video/', '');
+                            }
+                        }
+                    }
+                });
+
+                if (window.chrome?.webview && rtt >= 0) {
+                    window.chrome.webview.postMessage(JSON.stringify({
+                        type: 'STATS',
+                        rtt: rtt,
+                        fps: fps,
+                        codec: codec
+                    }));
+                }
+            } catch (err) {}
+        }
+    };
+
+    // 4. Cache reference for WebRTC MediaStream
     window.__crdMediaStream = null;
 
-    // 3. Power-gate Snapdragon Adreno GPU decode to 0% when entering Warm Standby
+    // 5. Power-gate Snapdragon Adreno GPU decode to 0% when entering Warm Standby
     window.__crdPauseSession = function () {
         try {
+            window.__crdStatsMonitor.stop();
             const video = document.querySelector('video');
             if (video && video.srcObject) {
                 window.__crdMediaStream = video.srcObject;
-                // Detaching srcObject shuts down WebMediaPlayerMS & hardware decode
                 video.srcObject = null;
                 console.log('[CRD-ARM] Session paused: video sink detached, Adreno decode 0%');
             }
@@ -27,7 +110,7 @@
         }
     };
 
-    // 4. Resume session with guaranteed sub-35ms IDR keyframe
+    // 6. Resume session with sub-35ms IDR keyframe and resume telemetry
     window.__crdResumeSession = async function () {
         try {
             const video = document.querySelector('video');
@@ -35,19 +118,87 @@
                 video.srcObject = window.__crdMediaStream;
                 try {
                     await video.play();
-                } catch (playErr) {
-                    // Autoplay policy handles this
-                }
+                } catch (playErr) {}
                 console.log('[CRD-ARM] Session resumed: video sink reattached');
             }
-            // Synthetic resize event triggers CRD host-side capturer to send immediate keyframe (PLI)
             window.dispatchEvent(new Event('resize'));
+            window.__crdStatsMonitor.start();
         } catch (err) {
             console.error('[CRD-ARM] Error resuming session:', err);
         }
     };
 
-    // 5. Auto-detect connected host machine name and report to wrapper
+    // 7. Screen Mismatch / Grey Bars Killer & Display Mode Switcher
+    window.__crdScreenFit = {
+        currentMode: 'contain', // 'contain' | 'fill' | 'cover'
+
+        setMode: function (mode) {
+            this.currentMode = mode;
+            const video = document.querySelector('video');
+            const container = document.querySelector('.desktop-viewport, .video-container') || document.body;
+
+            // Pitch-black OLED background
+            document.body.style.setProperty('background-color', '#000000', 'important');
+            if (container) {
+                container.style.setProperty('background-color', '#000000', 'important');
+                container.style.setProperty('display', 'flex', 'important');
+                container.style.setProperty('align-items', 'center', 'important');
+                container.style.setProperty('justify-content', 'center', 'important');
+            }
+
+            if (video) {
+                video.style.setProperty('object-fit', mode, 'important');
+                video.style.setProperty('image-rendering', '-webkit-optimize-contrast', 'important');
+
+                if (mode === 'fill') {
+                    video.style.setProperty('width', '100vw', 'important');
+                    video.style.setProperty('height', '100vh', 'important');
+                } else if (mode === 'cover') {
+                    video.style.setProperty('min-width', '100vw', 'important');
+                    video.style.setProperty('min-height', '100vh', 'important');
+                } else {
+                    // contain
+                    video.style.setProperty('max-width', '100vw', 'important');
+                    video.style.setProperty('max-height', '100vh', 'important');
+                }
+            }
+
+            window.dispatchEvent(new UIEvent('resize'));
+        }
+    };
+
+    // 8. Remote System Key Handlers
+    window.__crdSendCtrlAltDel = function () {
+        const cadButton = document.querySelector('[data-qa-id="send-ctrl-alt-del"], #send-ctrl-alt-del');
+        if (cadButton) {
+            cadButton.click();
+            return true;
+        }
+        if (window.remotedesktop && window.remotedesktop.ClientSession) {
+            try {
+                window.remotedesktop.ClientSession.sendCtrlAltDel();
+                return true;
+            } catch (e) {}
+        }
+        return false;
+    };
+
+    window.__crdSendLockWorkstation = function () {
+        const lockBtn = document.querySelector('[data-qa-id="lock-host"]');
+        if (lockBtn) {
+            lockBtn.click();
+            return true;
+        }
+        return false;
+    };
+
+    window.__crdExitPointerLock = function () {
+        if (document.exitPointerLock) {
+            document.exitPointerLock();
+        }
+    };
+
+    // 9. Auto-detect connected host machine name and report to wrapper
     window.__lastReportedHostName = '';
     setInterval(function () {
         try {
@@ -70,44 +221,47 @@
         } catch (e) {}
     }, 2000);
 
-    // 6. In-page accelerator key forwarding bridge via WebMessage
+    // 10. Auto-reconnect watchdog (catches disconnect/reboot modal)
+    setInterval(function () {
+        try {
+            const reconnectBtn = document.querySelector('[data-qa-id="reconnect-button"], .reconnect-button');
+            if (reconnectBtn && reconnectBtn.offsetParent !== null) {
+                console.log('[CRD-ARM] Detected disconnect dialog. Auto-reconnecting...');
+                reconnectBtn.click();
+            }
+        } catch (e) {}
+    }, 2500);
+
+    // 11. In-page accelerator key forwarding bridge via WebMessage
     window.addEventListener('keydown', function (e) {
         if (e.ctrlKey && e.altKey) {
             if (e.key === '1') {
-                if (window.chrome && window.chrome.webview) {
-                    window.chrome.webview.postMessage('SWITCH_1');
-                    e.preventDefault();
-                    e.stopPropagation();
-                }
+                window.chrome?.webview?.postMessage('SWITCH_1');
+                e.preventDefault(); e.stopPropagation();
             } else if (e.key === '2') {
-                if (window.chrome && window.chrome.webview) {
-                    window.chrome.webview.postMessage('SWITCH_2');
-                    e.preventDefault();
-                    e.stopPropagation();
-                }
+                window.chrome?.webview?.postMessage('SWITCH_2');
+                e.preventDefault(); e.stopPropagation();
             } else if (e.key === '3') {
-                if (window.chrome && window.chrome.webview) {
-                    window.chrome.webview.postMessage('SWITCH_3');
-                    e.preventDefault();
-                    e.stopPropagation();
-                }
+                window.chrome?.webview?.postMessage('SWITCH_3');
+                e.preventDefault(); e.stopPropagation();
             } else if (e.key === 'Tab') {
-                if (window.chrome && window.chrome.webview) {
-                    window.chrome.webview.postMessage('CYCLE');
-                    e.preventDefault();
-                    e.stopPropagation();
-                }
+                window.chrome?.webview?.postMessage('CYCLE');
+                e.preventDefault(); e.stopPropagation();
             } else if (e.key === 's' || e.key === 'S') {
-                if (window.chrome && window.chrome.webview) {
-                    window.chrome.webview.postMessage('TOGGLE_NOTCH');
-                    e.preventDefault();
-                    e.stopPropagation();
-                }
+                window.chrome?.webview?.postMessage('TOGGLE_NOTCH');
+                e.preventDefault(); e.stopPropagation();
+            } else if (e.key === 'd' || e.key === 'D') {
+                window.chrome?.webview?.postMessage('CYCLE_DISPLAY_MODE');
+                e.preventDefault(); e.stopPropagation();
+            } else if (e.key === 'Home') {
+                window.__crdExitPointerLock();
+                window.chrome?.webview?.postMessage('RELEASE_CURSOR');
+                e.preventDefault(); e.stopPropagation();
             }
         }
     }, true);
 
-    // 6. Injected CSS for 0px wasted space (clean full-bleed remote display)
+    // 12. Injected CSS for 0px wasted space & OLED Pitch-Black letterbox
     function injectZeroWasteStyles() {
         const styleId = 'crd-lightweight-zero-waste';
         if (document.getElementById(styleId)) return;
@@ -119,7 +273,10 @@
                 margin: 0 !important;
                 padding: 0 !important;
                 overflow: hidden !important;
-                background-color: #0c0c0c !important;
+                background-color: #000000 !important;
+            }
+            .desktop-viewport, .video-container {
+                background-color: #000000 !important;
             }
             header, .app-bar, .side-panel-toggle {
                 opacity: 0.1 !important;
@@ -129,12 +286,12 @@
                 opacity: 1 !important;
             }
             video, canvas {
-                width: 100vw !important;
-                height: 100vh !important;
-                object-fit: contain !important;
+                background-color: #000000 !important;
+                image-rendering: -webkit-optimize-contrast !important;
             }
         `;
         document.head.appendChild(style);
+        window.__crdStatsMonitor.start();
     }
 
     if (document.readyState === 'loading') {

@@ -6,66 +6,55 @@ Designed for users who actively juggle **1 to 3 remote desktop sessions** and wa
 
 ---
 
-## Why This Exists
+## What Makes This Different
 
-| Problem with Standard Browsers | How CRD-ARM Solves It |
+| Standard Browser Behavior | CRD-ARM Solution |
 | :--- | :--- |
 | **70–110px Wasted Space** (Tabs, URL bar, bookmarks bar, window chrome) | **0px Wasted**: 100% full-bleed remote display canvas from edge to edge. |
+| **Grey Letterbox Bars** on 16:10 / 3:2 laptop displays | **Zero-Bar Display Switcher**: Pitch-black OLED background + 1-click `Fit`, `Stretch`, and `Zoom` modes. |
 | **Heavy ARM64 Battery Drain** (Multiple tabs decoding 60fps in background) | **0% Background GPU Decode**: Power-gates the Qualcomm Adreno VPU when inactive. |
-| **Friction Switching Between 1–3 Hosts** | **Sub-35ms Warm Swap**: Instant hotkeys (`Ctrl+Alt+1..3`) and auto-hiding top notch. |
-| **Browser Tab Disconnects & Timeouts** | **Continuous Heartbeat Protection**: WebRTC signaling and SCTP data channels remain hot. |
-| **Blurry Text on High-DPI ARM Displays** | **Native 1:1 Pixel Mapping**: Synced with Snapdragon 150%/175% scaling (Surface Laptop 7, Yoga Slim 7x). |
+| **Friction Switching Between 1–3 Hosts** | **Sub-35ms Warm Swap**: Instant hotkeys (`Ctrl+Alt+1..3`) and auto-hiding/pinned top notch. |
+| **Annoying Clipboard Permission Prompts** | **Silent Scoped Auto-Grant**: Seamless text/code/image copy-paste strictly scoped to CRD. |
+| **Accidental Local Key Triggers (`Ctrl+Alt+Del`, `Win+L`)** | **Remote System Keys Flyout**: Direct CDP dispatch to remote host without locking your laptop. |
+| **Guessing Network Quality** | **Live Telemetry HUD**: Real-time RTT latency and FPS (`16ms · 60f`) with color-coded health dot. |
 
 ---
 
-## The Three Efficiency & Swap Modes
-
-Configure your preferred balance in the built-in Settings (press `Ctrl + Alt + S`):
+## The Dynamic Island Top Notch (440px HUD)
 
 ```text
-┌──────────────────────────────────────────────────────────────────────────────────────┐
-│ Mode               │ Wake Latency  │ GPU Decode Clock │ Inactive RAM │ Recommended For │
-├────────────────────┼───────────────┼──────────────────┼──────────────┼─────────────────┤
-│ ⚡ Ultra-Warm      │ < 35 ms       │ 0% (Power-gated) │ ~130 MB      │ Battery + Speed │
-│ 🌱 Eco-Warm        │ ~ 200 ms      │ 0% (Power-gated) │ ~80 MB       │ Maximum Battery │
-│ 🔥 Live Hot        │ 0 ms          │ Active 60 fps    │ ~150 MB      │ AC Mains Power  │
-└──────────────────────────────────────────────────────────────────────────────────────┘
-```
-
-1. **⚡ Ultra-Warm (Default / Recommended)**:
-   * When switching away, the video stream sink is detached (`video.srcObject = null`).
-   * The Qualcomm Adreno VPU drops to 0% decode utilization immediately.
-   * Direct3D 11 texture swapchains stay warm in RAM for **instant <35ms keyframe recovery**.
-2. **🌱 Eco-Warm (Maximum Power Saving)**:
-   * Detaches video sink and sets Chromium to `MemoryUsageTargetLevel.Low`.
-   * Aggressively trims JavaScript working sets and caches while maintaining WebRTC signaling.
-   * Wakes in ~200ms when switched back into focus.
-3. **🔥 Live Hot**:
-   * Keeps all 1–3 sessions actively decoding in the background for zero-latency instant swapping.
-
----
-
-## UI / UX: "The Top Notch" (Dynamic Island Dock)
-
-```text
-       Top Edge of Display (0px Wasted Screen Real Estate)
+       Top Edge of Snapdragon Display (0px Wasted Baseline)
 ────────────────────────────────────────────────────────────────────────────────
-[ Remote Tabs / Menus ]          [ The Top Notch: Center 30% ]       [ Remote Min/Close ]
-                                   (Requires 220ms hover dwell)
-                                                │
-                                                ▼ (Smooth 120ms slide-down)
-                                   ┌─────────────────────────┐
-                                   │ ● [1 Work]  ◐ [2 Lab] ⚙ │  ◄ Height: 44px
-                                   └─────────────────────────┘
-                                   [   16px Safety Margin    ]
+[ Remote Tabs ]        [ The Top Notch: Center 30% ]          [ Remote Min/Close ]
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │ ● 16ms 60f │ [● Workstation]  [◐ Home Lab]  [○ Cloud] │ ⛶ Fit ⌨ 📌 ⚙ ✕ │
+  └────────────────────────────────────────────────────────────────────────┘
 ```
 
-* **No Accidental Drops**: The hover trigger is constrained strictly to the **center 30% of your screen** (`width: 380px`) with a **220ms dwell filter**. Flinging your mouse to close remote windows or click remote browser tabs will never accidentally drop the dock.
-* **Auto-Collapse**: Smoothly slides away when your mouse returns to the remote desktop canvas.
-* **Session State Pills**:
-  * 🟢 **Active**: Focused session currently streaming at full 60fps.
-  * 🟡 **Warm Standby**: Background session held hot with 0% GPU decode.
-  * ⚪ **Empty / Disconnected**: Unassigned or offline session slot.
+* **Live Telemetry Badge**: Real-time WebRTC round-trip time (RTT) and frame rate directly from the active connection.
+  * 🟢 **Green**: Latency < 35ms & $\ge$ 30 FPS (Excellent)
+  * 🟡 **Amber**: Latency 35–80ms (Moderate)
+  * 🔴 **Red**: Latency > 80ms (High latency / Jitter)
+* **Zero-Bar Display Switcher (`BtnDisplayMode`)**:
+  * `⛶ Fit`: Preserves aspect ratio against pitch-black OLED background.
+  * `↔ Stretch`: Fills 100% of vertical and horizontal display, eliminating all bars.
+  * `🗖 Zoom`: Centers and scales video to eliminate letterbox margins without distortion.
+* **Remote System Keys (`⌨`)**:
+  * `Ctrl + Alt + Del`: Dispatches Secure Attention Sequence (SAS) to remote host.
+  * `Win + L`: Locks remote machine without locking your local Snapdragon laptop.
+  * `Win + D`: Minimizes all remote windows to show remote desktop.
+  * `Ctrl + Shift + Esc`: Launches Task Manager on remote host.
+  * `Release Cursor`: Exits pointer lock and returns mouse focus to local PC.
+* **Thumbnail Peek on Hover**: Resting the cursor over an inactive session pill displays a floating 192×128 thumbnail preview of that machine's screen.
+* **Pin Toggle (`📌`)**: Toggle between leaving the dock pinned at the top center or auto-collapsing.
+
+---
+
+## Snapdragon Smart Battery Governor
+
+When running on your Snapdragon laptop:
+* **On AC Power**: Unlocks full telemetry frequency (1.5s) and keeps swapchains hot.
+* **On Battery**: Event-driven via Win32 `RegisterPowerSettingNotification`. Automatically lowers inactive session memory targets to `Low` and throttles background checks, saving power on Qualcomm Oryon CPU cores.
 
 ---
 
@@ -77,65 +66,27 @@ Configure your preferred balance in the built-in Settings (press `Ctrl + Alt + S
 | **`Ctrl + Alt + 2`** | Instant jump to **Session 2** |
 | **`Ctrl + Alt + 3`** | Instant jump to **Session 3** |
 | **`Ctrl + Alt + Tab`** | Cycle forward to the next session |
-| **`Ctrl + Alt + S`** | Summon or dismiss the Top Notch & Settings |
-| **`Ctrl + Alt + Home`** | Escape hatch: Release mouse cursor trap / return focus to local PC |
+| **`Ctrl + Alt + D`** | Cycle Display Mode (`Fit` $\rightarrow$ `Stretch` $\rightarrow$ `Zoom`) |
+| **`Ctrl + Alt + S`** | Summon or dismiss the Top Notch Dock |
+| **`Ctrl + Alt + Home`** | Release pointer lock / return focus to local PC |
 | **`F11`** | Toggle borderless fullscreen mode |
 
 ---
 
-## WebRTC & Qualcomm Adreno Architecture
+## Building & Running
 
-```mermaid
-flowchart LR
-    subgraph Host["Snapdragon X Plus (Windows 11 ARM64)"]
-        UI["Top Notch Dock & Global Hotkey Engine"]
-        DirectX["Direct3D 11 & DXVA-HD Swapchains"]
-    end
+```powershell
+# Build and run directly
+.\build.ps1 -Run
 
-    subgraph Sessions["Persistent Chromium WebView2 Core"]
-        S1["Session 1: Work PC<br/>(Active: 60fps Decode)"]
-        S2["Session 2: Home Lab<br/>(Warm Standby: 0% Decode)"]
-        S3["Session 3: Cloud Rig<br/>(Warm Standby: 0% Decode)"]
-    end
-
-    UI --> S1
-    UI --> S2
-    UI --> S3
-    S1 --> DirectX
+# Publish single-file standalone ARM64 executable
+.\build.ps1 -PublishStandalone
 ```
-
-* **Zero-Flash Keyframe Injection**: Resuming a session injects a synthetic micro-resize event into Chrome Remote Desktop's desktop capturer, issuing an immediate **RTCP PLI (Picture Loss Indication)**. The remote host returns an IDR keyframe in ~20ms, preventing green macroblocks or decode stalls.
-* **Persistent Google Profile**: Google account authentication and saved remote machine PINs are stored securely in `%LOCALAPPDATA%\CRDLightweightARM\User Data`. You only log in once.
 
 ---
 
-## Building from Source
-
-### Prerequisites
-* Windows 11 on ARM64 (Qualcomm Snapdragon X Plus or Elite).
-* .NET 9 SDK (ARM64).
-
-### Build & Run
-```powershell
-# Restore and build native ARM64 binary
-dotnet build src/CRDLightweightARM/CRDLightweightARM.csproj -c Release
-
-# Run the app
-dotnet run --project src/CRDLightweightARM/CRDLightweightARM.csproj
-```
-
-### Publish Single-File Portable Executable
-```powershell
-dotnet publish src/CRDLightweightARM/CRDLightweightARM.csproj `
-  -c Release `
-  -r win-arm64 `
-  --self-contained true `
-  -p:PublishSingleFile=true `
-  -o ./dist
-```
-This produces a single, ultra-fast `CRDLightweightARM.exe` natively compiled for Snapdragon X Plus with zero external dependencies.
-
----
+## Repository
+GitHub: [https://github.com/zaczzk/chrome_remotedesktop_lightweight_arm](https://github.com/zaczzk/chrome_remotedesktop_lightweight_arm)
 
 ## License
 MIT License.

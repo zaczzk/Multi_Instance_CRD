@@ -6,19 +6,48 @@
         Height="900" Width="1440"
         WindowStyle="None"
         WindowState="Maximized"
-        Background="{StaticResource AppBackgroundBrush}"
+        Background="#000000"
         Focusable="True"
-        KeyDown="Window_KeyDown">
+        KeyDown="Window_KeyDown"
+        TextOptions.TextFormattingMode="Display"
+        TextOptions.TextRenderingMode="ClearType"
+        UseLayoutRounding="True" SnapsToDevicePixels="True">
 
-    <Grid x:Name="RootGrid">
+    <Window.Resources>
+        <!-- Flyout Menu Item Style -->
+        <Style x:Key="FlyoutMenuItemStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" Background="{TemplateBinding Background}" CornerRadius="6" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#33FFFFFF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid x:Name="RootGrid" Background="#000000">
         <!-- 1. WebRTC Remote Viewports (Zero Wasted Space - 100% Full Bleed) -->
-        <Grid x:Name="WebViewContainer">
+        <Grid x:Name="WebViewContainer" Background="#000000">
             <wv2:WebView2 x:Name="WebViewSession1" Visibility="Visible"/>
             <wv2:WebView2 x:Name="WebViewSession2" Visibility="Collapsed"/>
             <wv2:WebView2 x:Name="WebViewSession3" Visibility="Collapsed"/>
         </Grid>
 
-        <!-- 2. Invisible Top Hover Trigger Area (Center 30%, 340px wide, 8px high) -->
+        <!-- 2. Invisible Top Hover Trigger Area (Center 340px, 8px high) -->
         <Border x:Name="TopHoverTrigger"
                 Width="340" Height="8"
                 HorizontalAlignment="Center"
@@ -27,9 +56,9 @@
                 MouseEnter="TopHoverTrigger_MouseEnter"
                 MouseLeave="TopHoverTrigger_MouseLeave"/>
 
-        <!-- 3. The Top Notch (Dynamic Island Dock) -->
+        <!-- 3. The Top Notch Dynamic HUD (Elastic Island) -->
         <Border x:Name="TopNotch"
-                Width="380" Height="44"
+                Width="440" Height="44"
                 HorizontalAlignment="Center"
                 VerticalAlignment="Top"
                 Background="{StaticResource NotchBackgroundBrush}"
@@ -39,7 +68,7 @@
                 MouseEnter="TopNotch_MouseEnter"
                 MouseLeave="TopNotch_MouseLeave">
             <Border.Effect>
-                <DropShadowEffect BlurRadius="18" Direction="270" RenderingBias="Quality" ShadowDepth="4" Opacity="0.45"/>
+                <DropShadowEffect BlurRadius="20" Direction="270" RenderingBias="Quality" ShadowDepth="4" Opacity="0.5"/>
             </Border.Effect>
             <Border.RenderTransform>
                 <TranslateTransform x:Name="NotchTransform" Y="0"/>
@@ -47,61 +76,143 @@
 
             <Grid Margin="10,0">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/> <!-- Telemetry -->
+                    <ColumnDefinition Width="*"/>    <!-- Session Slots -->
+                    <ColumnDefinition Width="Auto"/> <!-- QoL Controls -->
                 </Grid.ColumnDefinitions>
 
-                <!-- Left: Notch Drag / Icon -->
-                <TextBlock Grid.Column="0" Text="CRD" FontWeight="Bold" Foreground="{StaticResource AccentBlueBrush}" 
-                           VerticalAlignment="Center" Margin="0,0,8,0" FontSize="11"/>
+                <!-- Left: Live Telemetry Pill (RTT & FPS) -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
+                    <Ellipse x:Name="TelemetryHealthDot" Width="7" Height="7" Fill="{StaticResource AccentGreenBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                    <TextBlock x:Name="TxtTelemetry" Text="--ms" FontFamily="Segoe UI Variable Small" 
+                               FontSize="10" Foreground="#8AFFFFFF" VerticalAlignment="Center"/>
+                </StackPanel>
 
                 <!-- Center: Session Slots -->
                 <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
                     <!-- Session 1 Pill -->
-                    <Button x:Name="BtnSession1" Style="{StaticResource PillButtonStyle}" Click="BtnSession1_Click" Margin="2,0">
+                    <Button x:Name="BtnSession1" Style="{StaticResource PillButtonStyle}" Click="BtnSession1_Click" 
+                            MouseEnter="SessionPill_MouseEnter" MouseLeave="SessionPill_MouseLeave" Tag="1" Margin="2,0">
                         <StackPanel Orientation="Horizontal">
-                            <Ellipse x:Name="DotSession1" Width="8" Height="8" Fill="{StaticResource AccentGreenBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                            <Ellipse x:Name="DotSession1" Width="7" Height="7" Fill="{StaticResource AccentGreenBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
                             <TextBlock x:Name="LabelSession1" Text="Session 1" FontSize="11" FontWeight="SemiBold"/>
                         </StackPanel>
                     </Button>
 
                     <!-- Session 2 Pill -->
-                    <Button x:Name="BtnSession2" Style="{StaticResource PillButtonStyle}" Click="BtnSession2_Click" Margin="2,0">
+                    <Button x:Name="BtnSession2" Style="{StaticResource PillButtonStyle}" Click="BtnSession2_Click" 
+                            MouseEnter="SessionPill_MouseEnter" MouseLeave="SessionPill_MouseLeave" Tag="2" Margin="2,0">
                         <StackPanel Orientation="Horizontal">
-                            <Ellipse x:Name="DotSession2" Width="8" Height="8" Fill="{StaticResource AccentAmberBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                            <Ellipse x:Name="DotSession2" Width="7" Height="7" Fill="{StaticResource AccentAmberBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
                             <TextBlock x:Name="LabelSession2" Text="Session 2" FontSize="11" FontWeight="SemiBold"/>
                         </StackPanel>
                     </Button>
 
                     <!-- Session 3 Pill -->
-                    <Button x:Name="BtnSession3" Style="{StaticResource PillButtonStyle}" Click="BtnSession3_Click" Margin="2,0">
+                    <Button x:Name="BtnSession3" Style="{StaticResource PillButtonStyle}" Click="BtnSession3_Click" 
+                            MouseEnter="SessionPill_MouseEnter" MouseLeave="SessionPill_MouseLeave" Tag="3" Margin="2,0">
                         <StackPanel Orientation="Horizontal">
-                            <Ellipse x:Name="DotSession3" Width="8" Height="8" Fill="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                            <Ellipse x:Name="DotSession3" Width="7" Height="7" Fill="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" Margin="0,0,5,0"/>
                             <TextBlock x:Name="LabelSession3" Text="Session 3" FontSize="11" FontWeight="SemiBold"/>
                         </StackPanel>
                     </Button>
                 </StackPanel>
 
-                <!-- Right: Settings & Window Controls -->
+                <!-- Right: QoL Tools & Window Controls -->
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button x:Name="BtnPin" Style="{StaticResource PillButtonStyle}" Click="BtnPin_Click" ToolTip="Toggle Pin / Auto-hide" Padding="6,2">
-                        <TextBlock x:Name="TxtPin" Text="📌" FontSize="11"/>
+                    <!-- Display Mode Selector [Fit / Stretch / Zoom] -->
+                    <Button x:Name="BtnDisplayMode" Style="{StaticResource PillButtonStyle}" Click="BtnDisplayMode_Click" 
+                            ToolTip="Display Mode: Fit (Ctrl+Alt+D)" Padding="5,2">
+                        <TextBlock x:Name="TxtDisplayMode" Text="⛶ Fit" FontSize="10.5" FontWeight="SemiBold" Foreground="#CCD"/>
                     </Button>
-                    <Button Style="{StaticResource PillButtonStyle}" Click="BtnSettings_Click" ToolTip="Settings (Ctrl+Alt+S)" Padding="6,2">
-                        <TextBlock Text="⚙" FontSize="12"/>
+
+                    <!-- Remote System Keys Flyout -->
+                    <Button x:Name="BtnSystemKeys" Style="{StaticResource PillButtonStyle}" Click="BtnSystemKeys_Click" 
+                            ToolTip="Remote System Keys" Padding="5,2">
+                        <TextBlock Text="⌨" FontSize="11"/>
                     </Button>
-                    <Button Style="{StaticResource PillButtonStyle}" Click="BtnFullscreen_Click" ToolTip="Toggle Fullscreen (F11)" Padding="6,2">
-                        <TextBlock Text="⛶" FontSize="11"/>
+
+                    <!-- Pin / Auto-Hide Toggle -->
+                    <Button x:Name="BtnPin" Style="{StaticResource PillButtonStyle}" Click="BtnPin_Click" 
+                            ToolTip="Toggle Pin / Auto-hide" Padding="5,2">
+                        <TextBlock x:Name="TxtPin" Text="📌" FontSize="10"/>
                     </Button>
-                    <Button Style="{StaticResource PillButtonStyle}" Click="BtnClose_Click" ToolTip="Close" Padding="6,2">
+
+                    <!-- Settings Button -->
+                    <Button Style="{StaticResource PillButtonStyle}" Click="BtnSettings_Click" ToolTip="Settings (Ctrl+Alt+S)" Padding="5,2">
+                        <TextBlock Text="⚙" FontSize="11"/>
+                    </Button>
+
+                    <!-- Close Button -->
+                    <Button Style="{StaticResource PillButtonStyle}" Click="BtnClose_Click" ToolTip="Close" Padding="5,2">
                         <TextBlock Text="✕" FontSize="11" Foreground="#FF6B6B"/>
                     </Button>
                 </StackPanel>
             </Grid>
         </Border>
 
-        <!-- 4. Settings Overlay Modal -->
+        <!-- 4. Floating Thumbnail Peek Popup (Inactive Session Hover) -->
+        <Popup x:Name="ThumbnailPeekPopup" Placement="Bottom" PlacementTarget="{Binding ElementName=TopNotch}"
+               AllowsTransparency="True" StaysOpen="False" VerticalOffset="8">
+            <Border Width="192" Height="128" Background="#E61C1C1C" BorderBrush="#3AFFFFFF" 
+                    BorderThickness="1" CornerRadius="8" Padding="3">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="16" Direction="270" ShadowDepth="4" Opacity="0.6"/>
+                </Border.Effect>
+                <Grid>
+                    <Image x:Name="ImgThumbnailPeek" Stretch="UniformToFill" RenderOptions.BitmapScalingMode="HighQuality"/>
+                    <Border Background="#A6000000" CornerRadius="4" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="6" Padding="6,2">
+                        <TextBlock x:Name="TxtThumbnailStatus" Text="Standby" FontSize="9.5" Foreground="#EEEEEE"/>
+                    </Border>
+                </Grid>
+            </Border>
+        </Popup>
+
+        <!-- 5. Remote System Keys Dropdown Flyout -->
+        <Popup x:Name="SystemKeysPopup" Placement="Bottom" PlacementTarget="{Binding ElementName=BtnSystemKeys}"
+               AllowsTransparency="True" StaysOpen="False" VerticalOffset="8">
+            <Border Width="210" Background="#F01C1C1C" BorderBrush="#33FFFFFF" 
+                    BorderThickness="1" CornerRadius="8" Padding="4">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="20" Direction="270" ShadowDepth="4" Opacity="0.65"/>
+                </Border.Effect>
+                <StackPanel>
+                    <Button Style="{StaticResource FlyoutMenuItemStyle}" Click="BtnSendCtrlAltDel_Click">
+                        <Grid Width="188">
+                            <TextBlock Text="Ctrl + Alt + Del" HorizontalAlignment="Left" FontSize="11.5"/>
+                            <TextBlock Text="SAS" HorizontalAlignment="Right" Foreground="#70FFFFFF" FontSize="10.5"/>
+                        </Grid>
+                    </Button>
+                    <Button Style="{StaticResource FlyoutMenuItemStyle}" Click="BtnSendWinL_Click">
+                        <Grid Width="188">
+                            <TextBlock Text="Win + L" HorizontalAlignment="Left" FontSize="11.5"/>
+                            <TextBlock Text="Lock Host" HorizontalAlignment="Right" Foreground="#70FFFFFF" FontSize="10.5"/>
+                        </Grid>
+                    </Button>
+                    <Button Style="{StaticResource FlyoutMenuItemStyle}" Click="BtnSendWinD_Click">
+                        <Grid Width="188">
+                            <TextBlock Text="Win + D" HorizontalAlignment="Left" FontSize="11.5"/>
+                            <TextBlock Text="Show Desktop" HorizontalAlignment="Right" Foreground="#70FFFFFF" FontSize="10.5"/>
+                        </Grid>
+                    </Button>
+                    <Button Style="{StaticResource FlyoutMenuItemStyle}" Click="BtnSendTaskMgr_Click">
+                        <Grid Width="188">
+                            <TextBlock Text="Ctrl + Shift + Esc" HorizontalAlignment="Left" FontSize="11.5"/>
+                            <TextBlock Text="Task Mgr" HorizontalAlignment="Right" Foreground="#70FFFFFF" FontSize="10.5"/>
+                        </Grid>
+                    </Button>
+                    <Separator Background="#26FFFFFF" Margin="0,3"/>
+                    <Button Style="{StaticResource FlyoutMenuItemStyle}" Click="BtnReleaseMouse_Click">
+                        <Grid Width="188">
+                            <TextBlock Text="Release Cursor" HorizontalAlignment="Left" FontSize="11.5" Foreground="#FF9E9E"/>
+                            <TextBlock Text="Esc" HorizontalAlignment="Right" Foreground="#70FFFFFF" FontSize="10.5"/>
+                        </Grid>
+                    </Button>
+                </StackPanel>
+            </Border>
+        </Popup>
+
+        <!-- 6. Settings Overlay Modal -->
         <Grid x:Name="SettingsOverlay" Visibility="Collapsed" Background="#B0000000">
             <Border Width="520" MaxHeight="600" HorizontalAlignment="Center" VerticalAlignment="Center"
                     Background="#1E1E1E" BorderBrush="#3A3A3A" BorderThickness="1" CornerRadius="12" Padding="24">
@@ -145,6 +256,7 @@
                         <TextBlock Text="Keyboard Shortcuts:" FontWeight="SemiBold" Foreground="#DDD" Margin="0,0,0,6"/>
                         <TextBlock Text="• Ctrl + Alt + [1..3]  : Jump directly to Session 1, 2, or 3" Foreground="#999" FontSize="11" Margin="0,1"/>
                         <TextBlock Text="• Ctrl + Alt + Tab   : Cycle to next active session" Foreground="#999" FontSize="11" Margin="0,1"/>
+                        <TextBlock Text="• Ctrl + Alt + D     : Cycle Display Mode (Fit / Stretch / Zoom)" Foreground="#999" FontSize="11" Margin="0,1"/>
                         <TextBlock Text="• Ctrl + Alt + S     : Toggle Top Notch Dock" Foreground="#999" FontSize="11" Margin="0,1"/>
                         <TextBlock Text="• Ctrl + Alt + Home  : Release mouse lock / return to local host" Foreground="#999" FontSize="11" Margin="0,1"/>
                         <TextBlock Text="• F11                : Toggle borderless full screen" Foreground="#999" FontSize="11" Margin="0,1"/>
