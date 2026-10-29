@@ -5,15 +5,13 @@
 [![Target](https://img.shields.io/badge/.NET-9.0--windows%20(Native%20ARM64)-purple.svg)](https://dotnet.microsoft.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A high-performance, minimalist multi-instance Chrome Remote Desktop client compiled natively for **Windows 11 on ARM64** (Qualcomm Snapdragon X Plus `X1P42100` and Snapdragon X Elite) and **x64** systems.
+A high-performance, minimalist multi-instance Chrome Remote Desktop client compiled natively for **Windows 11 on ARM64** and **x64** systems.
 
-Engineered for concurrent multi-host workflows (1–3 active sessions) with zero-margin edge-to-edge presentation, hardware-accelerated Direct3D 11 NV12 swapchain composition, native 16:10 (`1920×1200`) virtual EDID negotiation, and sub-35ms session switching.
+Engineered for concurrent multi-host workflows (1–3 active sessions) with zero-margin edge-to-edge presentation, hardware-accelerated Direct3D 11 NV12 swapchain composition, virtual EDID negotiation, and sub-35ms session switching.
 
 ---
 
-## ⚡ ADHD Mode: TL;DR in 30 Seconds
-
-> **Skip the deep dive. Here is everything you need to know to get running immediately:**
+## ⚡ TL;DR
 
 ### 1. What is this?
 A lightweight, native Windows 11 desktop application (ARM64 Snapdragon + x64) for **Chrome Remote Desktop**. It replaces clunky, resource-heavy Chrome browser tabs with a clean, hardware-accelerated, borderless multi-session command center.
