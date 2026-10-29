@@ -11,6 +11,36 @@ Engineered for concurrent multi-host workflows (1–3 active sessions) with zero
 
 ---
 
+## ⚡ ADHD Mode: TL;DR in 30 Seconds
+
+> **Skip the deep dive. Here is everything you need to know to get running immediately:**
+
+### 1. What is this?
+A lightweight, native Windows 11 desktop application (ARM64 Snapdragon + x64) for **Chrome Remote Desktop**. It replaces clunky, resource-heavy Chrome browser tabs with a clean, hardware-accelerated, borderless multi-session command center.
+
+### 2. How do I run it right now?
+Run the one-click batch launcher:
+```cmd
+Run-CRD.cmd
+```
+*Bypasses Windows 11 Smart App Control automatically. Zero installer, zero certificate warnings, zero setup.*
+
+### 3. The 4 Essential Shortcuts
+| Shortcut | Action | What it Does |
+| :--- | :--- | :--- |
+| **`Ctrl + Alt + [1..3]`** | **Switch Session** | Instantly swaps between Remote PC 1, 2, and 3 |
+| **`Ctrl + Alt + C`** | **Cockpit Mode** | Splits screen 50/50 side-by-side (`960×1200` per pane) |
+| **`Ctrl + Alt + M`** | **Mouse Lock** | Locks raw hardware mouse for 3D/CAD/Games *(double-tap `Esc` to release)* |
+| **`Ctrl + Alt + R`** | **Boss Key** | Instantly hides client to system tray / brings it back |
+
+### 4. Why use this over Chrome browser tabs?
+* 🚀 **Zero Browser Clutter**: Strips 100px of URL bars, tabs, and OS frames for true 100% edge-to-edge remote desktop.
+* 🖤 **OLED Pure Black**: Replaces Google's washed-out grey bars with true `#000000` pitch black to save battery on OLED panels.
+* 🔋 **Snapdragon Optimized**: Native ARM64 code with background memory compaction saves up to ~400 MB RAM per background host.
+* 🛸 **Top Notch HUD**: Floats at the top edge when you hover; auto-hides when you work. Zero airspace clipping.
+
+---
+
 ## Capabilities
 
 * **Zero-Margin Viewport**: Strips 70–110px of browser chrome, URL omniboxes, and OS borders for edge-to-edge remote rendering.
@@ -226,4 +256,4 @@ The client initializes and maintains a persistent configuration profile:
 
 ## License
 
-MIT License. Copyright (c) 2026 Zac and Contributors.
+MIT License. Copyright (c) 2026 zaczzk and Contributors.
