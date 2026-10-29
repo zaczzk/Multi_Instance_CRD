@@ -166,10 +166,10 @@
                             <TextBlock x:Name="TxtRelativeMouse" Text="🔒" FontSize="10.5" Foreground="#CCD"/>
                         </Button>
 
-                        <!-- Display Mode Selector [Fit / Stretch / Zoom] -->
+                        <!-- Display Mode Selector [Fit to Screen / Stretch / Zoom] -->
                         <Button x:Name="BtnDisplayMode" Style="{StaticResource PillButtonStyle}" Click="BtnDisplayMode_Click" 
-                                ToolTip="Display Mode: Fit / Stretch / Zoom (Ctrl+Alt+D)" Padding="4,2">
-                            <TextBlock x:Name="TxtDisplayMode" Text="⛶ Fit" FontSize="10" FontWeight="SemiBold" Foreground="#CCD"/>
+                                ToolTip="Display Mode: Fit to Screen / Stretch / Zoom (Ctrl+Alt+D)" Padding="4,2">
+                            <TextBlock x:Name="TxtDisplayMode" Text="⛶ Fit to Screen" FontSize="9.5" FontWeight="SemiBold" Foreground="#CCD"/>
                         </Button>
 
                         <!-- Native 16:10 (1920x1200) VideoLayout Protobuf Resolution Sync -->

@@ -1,6 +1,13 @@
 (function () {
     'use strict';
 
+    // 0. Default to Native "Fit to Screen" (Scale to fit = true, Resize desktop = false, Smooth scaling = true)
+    try {
+        window.localStorage.setItem('remoting-shrink-to-fit', 'true');
+        window.localStorage.setItem('remoting-desktop-resize', 'false');
+        window.localStorage.setItem('remoting-smooth-scaling', 'true');
+    } catch (e) {}
+
     // 1. Prevent Chromium Page Visibility API from freezing CRD's internal WebRTC heartbeat
     try {
         Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
@@ -302,7 +309,7 @@
                 // Only target the main remote desktop video/canvas (ignore tiny icons)
                 if (surface.clientWidth < 100 && surface.width < 100) return;
 
-                // Walk up ancestor containers and strip grey backgrounds & scrollbars
+                // Walk up ancestor containers and ensure pure OLED black background without breaking CRD layout
                 let parent = surface.parentElement;
                 let depth = 0;
                 while (parent && parent !== document.body && depth < 10) {
@@ -315,13 +322,16 @@
                         parent.style.setProperty('max-height', '100vh', 'important');
                         parent.style.setProperty('top', '0px', 'important');
                         parent.style.setProperty('left', '0px', 'important');
-                        parent.style.setProperty('margin', '0px', 'important');
-                        parent.style.setProperty('padding', '0px', 'important');
                         parent.style.setProperty('transform', 'none', 'important');
                     } else {
-                        // In 'contain' mode, do NOT touch parent widths/heights/transforms so CRD's native scaling matrix works properly!
+                        // In 'contain' (Fit to Screen) mode, CLEAN UP any forced geometry so CRD's native scaling works 100%!
+                        parent.style.removeProperty('width');
+                        parent.style.removeProperty('height');
                         parent.style.removeProperty('max-width');
                         parent.style.removeProperty('max-height');
+                        parent.style.removeProperty('top');
+                        parent.style.removeProperty('left');
+                        parent.style.removeProperty('transform');
                     }
                     parent = parent.parentElement;
                     depth++;
@@ -355,17 +365,15 @@
                     surface.style.setProperty('transform', 'none', 'important');
                     surface.style.setProperty('object-fit', 'cover', 'important');
                 } else {
-                    // Fit ('contain'): Preserve CRD's native scaling matrix so ultrawide/4K windows scale correctly!
+                    // Fit to Screen ('contain'): NEVER strip CRD's computed width/height/transform!
+                    // Only clean up forced fixed-position/inset so CRD's native scaling engine operates unhindered.
                     surface.style.removeProperty('position');
                     surface.style.removeProperty('top');
                     surface.style.removeProperty('left');
-                    surface.style.removeProperty('width');
-                    surface.style.removeProperty('height');
                     surface.style.removeProperty('max-width');
                     surface.style.removeProperty('max-height');
                     surface.style.removeProperty('margin');
-                    surface.style.removeProperty('transform');
-                    surface.style.setProperty('object-fit', 'contain', 'important');
+                    surface.style.removeProperty('object-fit');
                 }
             });
         }
@@ -481,10 +489,11 @@
                 reconnectBtn.click();
             }
 
-            // Auto-enable CRD native 'Scale to fit' so ultrawide/high-res desktops fit naturally with proper window scale
-            const shrinkBtn = document.querySelector('[data-qa-id="shrink-to-fit"], #shrink-to-fit');
-            if (shrinkBtn && !shrinkBtn.checked && shrinkBtn.getAttribute('aria-checked') !== 'true') {
-                shrinkBtn.click();
+            // Auto-enable CRD native 'Scale to fit' if checkbox exists
+            const shrinkInput = document.querySelector('input[data-qa-id="shrink-to-fit"], input#shrink-to-fit');
+            if (shrinkInput && !shrinkInput.checked) {
+                shrinkInput.checked = true;
+                shrinkInput.dispatchEvent(new Event('change', { bubbles: true }));
             }
         } catch (e) {}
     }, 1000);
@@ -497,14 +506,17 @@
         const style = document.createElement('style');
         style.id = styleId;
         style.textContent = `
-            html, body,
+            html, body {
+                margin: 0 !important;
+                padding: 0 !important;
+                overflow: hidden !important;
+                background-color: #000000 !important;
+                background: #000000 !important;
+            }
             remoting-app, remoting-display, crd-session,
             mat-sidenav-container, mat-sidenav-content, mat-drawer-container, mat-drawer-content,
             .desktop-viewport, .video-container, .client-container, .viewport, .scroll-container,
             div[style*="rgb(32, 33, 36)"], div[style*="#202124"], div[style*="rgb(60, 64, 67)"], div[style*="#3c4043"] {
-                margin: 0 !important;
-                padding: 0 !important;
-                overflow: hidden !important;
                 background-color: #000000 !important;
                 background: #000000 !important;
             }

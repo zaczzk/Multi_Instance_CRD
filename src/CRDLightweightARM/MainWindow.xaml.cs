@@ -1389,10 +1389,10 @@ public partial class MainWindow : Window
 
         TxtDisplayMode.Text = mode switch
         {
-            "contain" => "⛶ Fit",
+            "contain" => "⛶ Fit to Screen",
             "fill" => "↔ Stretch",
             "cover" => "🗖 Zoom",
-            _ => "⛶ Fit"
+            _ => "⛶ Fit to Screen"
         };
 
         var currentView = GetWebViewByIndex(_currentSessionIndex);
