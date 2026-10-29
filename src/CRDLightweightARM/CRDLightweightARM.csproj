@@ -19,9 +19,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="crd-mediator.js">
+    <EmbeddedResource Include="crd-mediator.js">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

@@ -7,6 +7,14 @@ param(
     [switch]$PublishAll
 )
 
+# Stop any running CRDLightweightARM instances so single-file bundle overwrite never fails
+$running = Get-Process -Name "CRDLightweightARM*" -ErrorAction SilentlyContinue
+if ($running) {
+    Write-Host "Stopping running CRDLightweightARM instance(s)..." -ForegroundColor Yellow
+    $running | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 600
+}
+
 $DotnetPath = "$HOME\AppData\Local\Microsoft\dotnet\dotnet.exe"
 if (-not (Test-Path $DotnetPath)) {
     $DotnetPath = (Get-Command dotnet -ErrorAction SilentlyContinue).Source
@@ -55,5 +63,5 @@ Write-Host "Building CRD ($Arch) Release..." -ForegroundColor Cyan
 
 if ($Run) {
     Write-Host "Launching Chrome Remote Desktop Lightweight ($Arch)..." -ForegroundColor Green
-    & $DotnetPath run --project $Project
+    & $DotnetPath run --project $Project -c Release -r $targetRid
 }

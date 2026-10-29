@@ -8,7 +8,7 @@ namespace CRDLightweightARM;
 public enum WarmMode
 {
     UltraWarm,  // Instant wake <35ms, 0% GPU decode, normal memory (Recommended)
-    EcoWarm,    // Low-RAM standby ~200ms wake, 0% GPU decode, low memory target
+    EcoWarm,    // Low-RAM standby ~200ms wake, 0% GPU decode, Win11 EcoQoS + EmptyWorkingSet
     LiveHot     // Continuous 60fps decode in background, 0ms wake
 }
 
@@ -25,6 +25,8 @@ public class AppConfig
     public WarmMode EfficiencyMode { get; set; } = WarmMode.UltraWarm;
     public int NotchDwellMs { get; set; } = 220;
     public bool EnforceNativeDpi { get; set; } = true;
+    public bool AutoSyncNativeResolution { get; set; } = false;
+    public bool LosslessColorMode { get; set; } = false;
     public bool StartFullscreen { get; set; } = true;
     public bool MinimizeToTrayOnClose { get; set; } = true;
     public bool GlobalHotkeyEnabled { get; set; } = true;
