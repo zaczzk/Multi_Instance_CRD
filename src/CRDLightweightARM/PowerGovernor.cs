@@ -99,6 +99,16 @@ public class WindowsPowerGovernor : IDisposable
 
     public void Dispose()
     {
+        if (_hwndSource != null)
+        {
+            try
+            {
+                _hwndSource.RemoveHook(HwndHook);
+            }
+            catch {}
+            _hwndSource = null;
+        }
+
         if (_hPowerNotifyACDC != IntPtr.Zero)
         {
             UnregisterPowerSettingNotification(_hPowerNotifyACDC);

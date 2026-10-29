@@ -177,6 +177,7 @@ public partial class MainWindow : Window
         LocationChanged += (_, _) => SyncHudWindowBounds();
         SizeChanged += (_, _) => SyncHudWindowBounds();
         StateChanged += (_, _) => SyncHudWindowBounds();
+        DpiChanged += (_, _) => SyncHudWindowBounds();
         Closing += MainWindow_Closing;
         Closed += MainWindow_Closed;
     }
@@ -319,10 +320,29 @@ public partial class MainWindow : Window
 
         if (WindowState == WindowState.Maximized)
         {
-            _hudWindow.Left = 0;
-            _hudWindow.Top = 0;
-            _hudWindow.Width = SystemParameters.PrimaryScreenWidth;
-            _hudWindow.Height = SystemParameters.PrimaryScreenHeight;
+            try
+            {
+                var pZero = PointToScreen(new Point(0, 0));
+                var transform = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformFromDevice;
+                if (transform.HasValue)
+                {
+                    var dipPoint = transform.Value.Transform(pZero);
+                    _hudWindow.Left = dipPoint.X;
+                    _hudWindow.Top = dipPoint.Y;
+                }
+                else
+                {
+                    _hudWindow.Left = Left;
+                    _hudWindow.Top = Top;
+                }
+            }
+            catch
+            {
+                _hudWindow.Left = Left;
+                _hudWindow.Top = Top;
+            }
+            _hudWindow.Width = ActualWidth > 0 ? ActualWidth : (Width > 0 ? Width : SystemParameters.PrimaryScreenWidth);
+            _hudWindow.Height = ActualHeight > 0 ? ActualHeight : (Height > 0 ? Height : SystemParameters.PrimaryScreenHeight);
         }
         else
         {
@@ -341,9 +361,7 @@ public partial class MainWindow : Window
     {
         if (_hKeyboardHook != IntPtr.Zero) return;
         _keyboardHookDelegate = LowLevelKeyboardCallback;
-        using var curProcess = Process.GetCurrentProcess();
-        using var curModule = curProcess.MainModule;
-        IntPtr hMod = GetModuleHandle(curModule?.ModuleName);
+        IntPtr hMod = GetModuleHandle(null);
         _hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, _keyboardHookDelegate, hMod, 0);
     }
 
@@ -473,6 +491,10 @@ public partial class MainWindow : Window
     {
         ReleaseCursor();
         UninstallLowLevelKeyboardHook();
+        _activeThumbnailTimer?.Stop();
+        _thumbnailCloseTimer?.Stop();
+        _dwellTimer?.Stop();
+        _collapseDebounceTimer?.Stop();
         _rawMouseEngine.Dispose();
         _oryonGovernor.Dispose();
 
@@ -851,6 +873,9 @@ public partial class MainWindow : Window
     public async void HideToTray()
     {
         ReleaseCursor();
+        UninstallLowLevelKeyboardHook();
+        _activeThumbnailTimer?.Stop();
+        _oryonGovernor.RevertMainThreadPromotion();
 
         var wv = GetWebViewByIndex(_currentSessionIndex);
         if (wv?.CoreWebView2 != null)
@@ -876,6 +901,10 @@ public partial class MainWindow : Window
 
     public async void RestoreFromTray()
     {
+        InstallLowLevelKeyboardHook();
+        _oryonGovernor.PromoteMainThreadForLowLatency();
+        _activeThumbnailTimer?.Start();
+
         ShowInTaskbar = true;
         Visibility = Visibility.Visible;
         WindowState = WindowState.Maximized;
