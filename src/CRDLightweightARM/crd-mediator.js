@@ -497,10 +497,19 @@
                 }
             }
 
-            // Auto-reconnect dialog
+            // Auto-reconnect dialog with 5s backoff cooldown (max 5 retries)
             const reconnectBtn = document.querySelector('[data-qa-id="reconnect-button"], .reconnect-button');
             if (reconnectBtn && reconnectBtn.offsetParent !== null) {
-                reconnectBtn.click();
+                const now = Date.now();
+                window.__crdLastReconnect = window.__crdLastReconnect || 0;
+                window.__crdReconnectAttempts = window.__crdReconnectAttempts || 0;
+                if (now - window.__crdLastReconnect > 5000 && window.__crdReconnectAttempts < 5) {
+                    window.__crdLastReconnect = now;
+                    window.__crdReconnectAttempts++;
+                    reconnectBtn.click();
+                }
+            } else {
+                window.__crdReconnectAttempts = 0;
             }
 
             // Auto-enable CRD native 'Scale to fit' if checkbox exists

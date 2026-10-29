@@ -193,6 +193,8 @@ public sealed class RawInputMouseEngine : IDisposable
     /// </summary>
     public IntPtr ProcessWindowMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        if (_isDisposed) return IntPtr.Zero;
+
         if (msg == WM_INPUT)
         {
             if (ProcessRawInputMessage(lParam))
