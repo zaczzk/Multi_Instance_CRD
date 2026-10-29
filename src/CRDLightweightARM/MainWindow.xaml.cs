@@ -698,7 +698,15 @@ public partial class MainWindow : Window
                 {
                     if (_config.AutoSyncNativeResolution)
                     {
-                        await SyncSessionHostResolutionAsync(index);
+                        // 350ms settling gate ensures host WebRTC capturer & SDP negotiation finish before resolution inject
+                        _ = Task.Run(async () =>
+                        {
+                            await Task.Delay(350);
+                            await Dispatcher.InvokeAsync(async () =>
+                            {
+                                await SyncSessionHostResolutionAsync(index);
+                            });
+                        });
                     }
                 }
                 else if (msg != null && msg.StartsWith("HOST_NAME:"))

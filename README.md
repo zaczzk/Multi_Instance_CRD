@@ -1,11 +1,11 @@
-# Chrome Remote Desktop — Lightweight ARM (CRD-ARM)
+# Chrome Remote Desktop — Multi_Instance_CRD
 
-[![Platform](https://img.shields.io/badge/Platform-Windows%2011%20ARM64%20%7C%20x64-blue.svg)](https://github.com/zaczzk/chrome_remotedesktop_lightweight_arm)
-[![Hardware](https://img.shields.io/badge/Hardware-Qualcomm%20Snapdragon%20X%20Series-orange.svg)](https://github.com/zaczzk/chrome_remotedesktop_lightweight_arm)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2011%20ARM64%20%7C%20x64-blue.svg)](https://github.com/zaczzk/Multi_Instance_CRD)
+[![Hardware](https://img.shields.io/badge/Hardware-Qualcomm%20Snapdragon%20X%20Series-orange.svg)](https://github.com/zaczzk/Multi_Instance_CRD)
 [![Target](https://img.shields.io/badge/.NET-9.0--windows%20(Native%20ARM64)-purple.svg)](https://dotnet.microsoft.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A high-performance, minimalist Chrome Remote Desktop client compiled natively for **Windows 11 on ARM64** (Qualcomm Snapdragon X Plus `X1P42100` and Snapdragon X Elite) and **x64** systems.
+A high-performance, minimalist multi-instance Chrome Remote Desktop client compiled natively for **Windows 11 on ARM64** (Qualcomm Snapdragon X Plus `X1P42100` and Snapdragon X Elite) and **x64** systems.
 
 Engineered for concurrent multi-host workflows (1–3 active sessions) with zero-margin edge-to-edge presentation, hardware-accelerated Direct3D 11 NV12 swapchain composition, native 16:10 (`1920×1200`) virtual EDID negotiation, and sub-35ms session switching.
 
@@ -17,10 +17,11 @@ Engineered for concurrent multi-host workflows (1–3 active sessions) with zero
 * **Aspect-Preserving Scaling**: Default Fit-to-Screen matrix scaling supports ultrawide (`21:9`, `32:9`) and 4K displays with proportional scaling and sharp font rendering.
 * **OLED Pure Black Letterboxing**: Enforces `#000000` pitch-black margins across all container tiers, eliminating Google `#202124` / `#3c4043` grey letterbox power draw on OLED displays.
 * **Native Wire-Level Resolution Sync (`Ctrl+Alt+N`)**: Injects `ClientResolution`, `VideoLayout`, and `VideoControl` protobuf messages over the WebRTC SCTP `"control"` data channel to enforce exact host-side raster dimensions (`1920×1200 @ 96 DPI` or `960×1200` per split pane).
+* **Per-Monitor Raster Topology**: Automatically probes physical raster dimensions (`rcMonitor`) and Per-Monitor V2 DPI via `MonitorFromWindow`, adapting to external 4K monitors and laptop panels.
 * **Elastic Dynamic HUD**: Auto-measuring top dock hosted in an independent Win32 owned layered window (`WS_EX_LAYERED`), bypassing WPF `WebView2` airspace occlusion.
-* **0ms UI Session Switching**: Swaps active session surfaces synchronously on the UI thread; delegates working-set compaction and thumbnail encoding to non-blocking background threads.
+* **0ms UI Session Switching**: Swaps active session surfaces synchronously on the UI thread; delegates working-set compaction and thumbnail encoding to non-blocking background threads with sequence cancellation protection.
 * **Remote Display Routing (`Ctrl+Alt+O`)**: Cycles multi-monitor remote hosts across Display 1, Display 2, or Spanned All via Chromoting `SelectDesktopDisplayRequest` protobufs.
-* **Snapdragon Oryon MMCSS & Windows 11 EcoQoS**: Promotes active UI and render threads via `AvSetMmThreadCharacteristicsW("Games")`; throttles background sessions via `PROCESS_POWER_THROTTLING_EXECUTION_SPEED` and `EmptyWorkingSet` memory compaction.
+* **Snapdragon Oryon MMCSS & Windows 11 EcoQoS**: Promotes active UI and render threads via `AvSetMmThreadCharacteristicsW("Games")`; throttles background sessions via `PROCESS_POWER_THROTTLING_EXECUTION_SPEED` and `EmptyWorkingSet` memory compaction. Automatically drops priority to idle during tray standby.
 * **Win32 `WM_INPUT` Raw Hardware Mouse Engine (`Ctrl+Alt+M`)**: Unaccelerated relative cursor delta capture with automatic midpoint reset and SCTP `"event"` channel `MouseEvent` streaming for 3D viewports (CAD, Blender, Unreal Engine).
 * **USB HID SAS Dispatch (`⌨`)**: Dispatches `Ctrl+Alt+Del` (Secure Attention Sequence), `Win+L`, `Win+D`, and `Ctrl+Shift+Esc` via USB HID Usage Page `0x07` keyboard descriptors without triggering local OS handlers.
 * **Smart App Control Execution Bypass**: Ships with `Run-CRD.cmd` launcher executing via Microsoft-signed `dotnet.exe`, preventing Smart App Control and Windows Defender untrusted-binary execution blocks.
@@ -30,12 +31,12 @@ Engineered for concurrent multi-host workflows (1–3 active sessions) with zero
 ## Top Notch Dynamic HUD
 
 ```text
-       Top Edge of Display (0px Margin Baseline)
+               Top Edge of Display (0px Margin Baseline / Edge-to-Edge)
 ────────────────────────────────────────────────────────────────────────────────────
-[ Remote Tabs ]               [ Dynamic HUD (Auto-Sized) ]            [ Remote Min/Close ]
-  ┌──────────────────────────────────────────────────────────────────────────────────────┐
-  │ ● 16ms 60f │ [● Workstation] [◐ Lab Server] [○ Cloud] │ 🖥 Mon ◫ 🔒 ⛶ Fit 16:10 ⌨ 📌 ⚙ ✕ │
-  └──────────────────────────────────────────────────────────────────────────────────────┘
+ [ Remote Tabs ]            [ Top Notch Dynamic HUD (Auto-Sized) ]    [ Controls ]
+┌──────────────┬──────────────────────────────────────────┬────────────────────────┐
+│  16ms  60f   │ [1: Workstation*] [2: Home Lab] [3: VM]  │ Mon  Split  Fit  SAS X │
+└──────────────┴──────────────────────────────────────────┴────────────────────────┘
 ```
 
 The Top Notch floats at the top-center of the screen. It auto-hides when the cursor leaves the trigger zone, or remains anchored when pinned (`📌` / `Ctrl+Alt+S`):

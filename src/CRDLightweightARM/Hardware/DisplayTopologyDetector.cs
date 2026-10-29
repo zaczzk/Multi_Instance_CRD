@@ -142,9 +142,32 @@ public static class DisplayTopologyDetector
             }
         }
 
-        // Per-Monitor V2 DPI resolution
+        // Per-Monitor physical raster resolution & Per-Monitor V2 DPI
         if (hwnd != IntPtr.Zero)
         {
+            try
+            {
+                var hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                if (hMon != IntPtr.Zero)
+                {
+                    var mi = new MONITORINFO();
+                    mi.cbSize = (uint)Marshal.SizeOf(typeof(MONITORINFO));
+                    if (GetMonitorInfo(hMon, ref mi))
+                    {
+                        int monW = mi.rcMonitor.Right - mi.rcMonitor.Left;
+                        int monH = mi.rcMonitor.Bottom - mi.rcMonitor.Top;
+                        if (monW > 0 && monH > 0)
+                        {
+                            physicalWidth = monW;
+                            physicalHeight = monH;
+                            logicalWidth = monW;
+                            logicalHeight = monH;
+                        }
+                    }
+                }
+            }
+            catch {}
+
             try
             {
                 uint winDpi = GetDpiForWindow(hwnd);
@@ -377,6 +400,25 @@ public static class DisplayTopologyDetector
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint GetDpiForSystem();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+    private const uint MONITOR_DEFAULTTONEAREST = 2;
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT { public int Left, Top, Right, Bottom; }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    private struct MONITORINFO
+    {
+        public uint cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
 
     #endregion
 }
