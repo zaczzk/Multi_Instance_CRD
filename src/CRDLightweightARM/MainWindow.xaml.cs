@@ -56,6 +56,7 @@ public partial class MainWindow : Window
     private int _accumulatedRawDx = 0;
     private int _accumulatedRawDy = 0;
     private bool _isExplicitExit = false;
+    private int _switchSequence = 0;
     private HwndSource? _hwndSource;
     private PhysicalDisplayTopology _displayTopology;
 
@@ -749,7 +750,7 @@ public partial class MainWindow : Window
                 losslessColor: _config.LosslessColorMode
             );
 
-            string script = $"window.__crdSetHostResolution && window.__crdSetHostResolution({syncPayloads.AlignedWidth}, {syncPayloads.AlignedHeight}, {syncPayloads.Dpi}, ['{syncPayloads.ClientResolutionBase64}', '{syncPayloads.VideoLayoutBase64}', '{syncPayloads.VideoControlBase64}']);";
+            string script = $"window.__crdSetHostResolution && window.__crdSetHostResolution({syncPayloads.AlignedWidth}, {syncPayloads.AlignedHeight}, {syncPayloads.Dpi}, ['{syncPayloads.ControlMessageBase64}']);";
             await wv.CoreWebView2.ExecuteScriptAsync(script);
 
             TxtNativeRes.Text = mode == DisplayLayoutMode.CockpitDualSplit5050
@@ -1047,6 +1048,8 @@ public partial class MainWindow : Window
         }
 
         // 1. Instantaneous visual swap: 0ms UI latency
+        int seq = ++_switchSequence;
+
         if (targetView != null)
         {
             Panel.SetZIndex(targetView, 10);
@@ -1057,26 +1060,37 @@ public partial class MainWindow : Window
         if (prevView != null && prevView != targetView)
         {
             Panel.SetZIndex(prevView, 0);
-            prevView.Visibility = Visibility.Collapsed;
         }
 
         // 2. Non-blocking asynchronous background warm-swap & thumbnail capture
         _ = Task.Run(async () =>
         {
-            // Capture thumbnail of the session we just left
-            if (prevView != null)
+            // Capture thumbnail of the session we just left (while still painted in visual tree behind active slot)
+            if (prevView != null && prevView != targetView)
             {
                 await Dispatcher.InvokeAsync(async () =>
                 {
-                    await CaptureSessionThumbnailAsync(prevIndex, prevView);
+                    try
+                    {
+                        await CaptureSessionThumbnailAsync(prevIndex, prevView);
+                    }
+                    finally
+                    {
+                        // Safely collapse after thumbnail is captured, provided user didn't switch back
+                        if (_currentSessionIndex != prevIndex)
+                        {
+                            prevView.Visibility = Visibility.Collapsed;
+                        }
+                    }
                 });
             }
 
-            // Power-throttle previous session
+            // Power-throttle previous session only if sequence is still current
             if (prevView?.CoreWebView2 != null && _config.EfficiencyMode != WarmMode.LiveHot)
             {
                 await Dispatcher.InvokeAsync(async () =>
                 {
+                    if (seq != _switchSequence || _currentSessionIndex == prevIndex) return;
                     try
                     {
                         await prevView.CoreWebView2.ExecuteScriptAsync("window.__crdPauseSession && window.__crdPauseSession();");
@@ -1090,11 +1104,12 @@ public partial class MainWindow : Window
                 });
             }
 
-            // Wake & resume target session
+            // Wake & resume target session only if sequence is still current
             if (targetView?.CoreWebView2 != null)
             {
                 await Dispatcher.InvokeAsync(async () =>
                 {
+                    if (seq != _switchSequence) return;
                     try
                     {
                         targetView.CoreWebView2.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Normal;

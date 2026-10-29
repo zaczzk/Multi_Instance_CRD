@@ -45,6 +45,13 @@
             dc.addEventListener('open', () => {
                 window.chrome?.webview?.postMessage('DATACHANNEL_READY:control');
             });
+            dc.addEventListener('close', () => {
+                if (window.__crdControlChannel === dc) window.__crdControlChannel = null;
+                window.chrome?.webview?.postMessage('DATACHANNEL_CLOSED:control');
+            });
+            dc.addEventListener('error', () => {
+                if (window.__crdControlChannel === dc) window.__crdControlChannel = null;
+            });
             if (dc.readyState === 'open') {
                 window.chrome?.webview?.postMessage('DATACHANNEL_READY:control');
             }
@@ -52,6 +59,13 @@
             window.__crdEventChannel = dc;
             dc.addEventListener('open', () => {
                 window.chrome?.webview?.postMessage('DATACHANNEL_READY:event');
+            });
+            dc.addEventListener('close', () => {
+                if (window.__crdEventChannel === dc) window.__crdEventChannel = null;
+                window.chrome?.webview?.postMessage('DATACHANNEL_CLOSED:event');
+            });
+            dc.addEventListener('error', () => {
+                if (window.__crdEventChannel === dc) window.__crdEventChannel = null;
             });
             if (dc.readyState === 'open') {
                 window.chrome?.webview?.postMessage('DATACHANNEL_READY:event');
