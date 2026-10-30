@@ -15,6 +15,33 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        DispatcherUnhandledException += (s, args) =>
+        {
+            try
+            {
+                string logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CRDLightweightARM");
+                Directory.CreateDirectory(logDir);
+                string logPath = Path.Combine(logDir, "crash.log");
+                File.WriteAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] DispatcherUnhandledException:\n{args.Exception}\n");
+                MessageBox.Show($"CRD encountered an error:\n\n{args.Exception.Message}\n\nDetails saved to: {logPath}", "CRD Startup Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            catch { }
+            args.Handled = true;
+            Shutdown(1);
+        };
+
+        AppDomain.CurrentDomain.UnhandledException += (s, args) =>
+        {
+            try
+            {
+                string logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CRDLightweightARM");
+                Directory.CreateDirectory(logDir);
+                string logPath = Path.Combine(logDir, "crash.log");
+                File.WriteAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] AppDomain UnhandledException:\n{args.ExceptionObject}\n");
+            }
+            catch { }
+        };
+
         if (e.Args.Length > 0 && Array.Exists(e.Args, a => a.Equals("--self-test", StringComparison.OrdinalIgnoreCase)))
         {
             int code = RunHardwareAndProtocolSelfTest();

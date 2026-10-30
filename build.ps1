@@ -13,7 +13,7 @@ if ($running) {
     Write-Host "Stopping running CRDLightweightARM instance(s)..." -ForegroundColor Yellow
     $running | Stop-Process -Force -ErrorAction SilentlyContinue
 }
-Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*CRDLightweightARM*" } | ForEach-Object {
+Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and ($_.Name -eq "dotnet.exe" -or $_.Name -eq "CRDLightweightARM.exe") -and $_.CommandLine -like "*CRDLightweightARM.dll*" } | ForEach-Object {
     Write-Host "Stopping process $($_.ProcessId) ($($_.Name)) hosting CRD..." -ForegroundColor Yellow
     Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 600
