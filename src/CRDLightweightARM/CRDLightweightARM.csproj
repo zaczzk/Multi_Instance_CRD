@@ -9,6 +9,7 @@
     <ApplicationTitle>Chrome Remote Desktop - Lightweight ARM</ApplicationTitle>
     <AssemblyName>CRDLightweightARM</AssemblyName>
     <RootNamespace>CRDLightweightARM</RootNamespace>
+    <ApplicationIcon>app.ico</ApplicationIcon>
     <!-- Optimized for Windows on ARM64 Snapdragon X Plus -->
     <RuntimeIdentifiers>win-arm64;win-x64</RuntimeIdentifiers>
   </PropertyGroup>
@@ -22,6 +23,10 @@
     <EmbeddedResource Include="crd-mediator.js">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </EmbeddedResource>
+    <Resource Include="app.ico" />
+    <Content Include="app.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>

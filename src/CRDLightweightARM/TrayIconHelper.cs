@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
@@ -58,6 +59,9 @@ public class TrayIconHelper : IDisposable
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr LoadIcon(IntPtr hInstance, IntPtr lpIconName);
 
+    [DllImport("shell32.dll", CharSet = CharSet.Auto)]
+    private static extern int ExtractIconEx(string lpszFile, int nIconIndex, out IntPtr phiconLarge, out IntPtr phiconSmall, int nIcons);
+
     [DllImport("kernel32.dll", CharSet = CharSet.Auto)]
     private static extern IntPtr GetModuleHandle(string? lpModuleName);
 
@@ -79,11 +83,29 @@ public class TrayIconHelper : IDisposable
 
         _wmTaskbarCreated = RegisterWindowMessage("TaskbarCreated");
 
-        // Load default app icon or system application icon
+        // Load custom application icon (PC + Wi-Fi) or fallback
         try
         {
-            var hModule = GetModuleHandle(null);
-            _hIcon = LoadIcon(hModule, (IntPtr)32512); // IDI_APPLICATION
+            string icoPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "app.ico");
+            if (File.Exists(icoPath))
+            {
+                ExtractIconEx(icoPath, 0, out _, out _hIcon, 1);
+            }
+
+            if (_hIcon == IntPtr.Zero)
+            {
+                string? exePath = Environment.ProcessPath;
+                if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
+                {
+                    ExtractIconEx(exePath, 0, out _, out _hIcon, 1);
+                }
+            }
+
+            if (_hIcon == IntPtr.Zero)
+            {
+                var hModule = GetModuleHandle(null);
+                _hIcon = LoadIcon(hModule, (IntPtr)32512); // IDI_APPLICATION fallback
+            }
         }
         catch
         {

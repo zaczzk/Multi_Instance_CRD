@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/app-icon.png" width="120" alt="Multi_Instance_CRD Icon" />
+</p>
+
 # Chrome Remote Desktop — Multi_Instance_CRD
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2011%20ARM64%20%7C%20x64-blue.svg)](https://github.com/zaczzk/Multi_Instance_CRD)

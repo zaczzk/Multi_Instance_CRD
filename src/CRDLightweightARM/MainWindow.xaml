@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         Title="Chrome Remote Desktop - Lightweight ARM"
+        Icon="app.ico"
         Height="900" Width="1440"
         WindowStyle="None"
         WindowState="Maximized"
