@@ -1,0 +1,126 @@
+name: Build and Distribute
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Publish GitHub Release'
+        required: false
+        default: false
+        type: boolean
+      release_tag:
+        description: 'Release Tag (e.g. v1.0.1 - required if not triggered by git tag)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build:
+    name: Compile ARM64 & x64 Dist
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET 9 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Build Native ARM64 (Snapdragon X)
+        run: |
+          dotnet publish src/CRDLightweightARM/CRDLightweightARM.csproj `
+            -c Release `
+            -r win-arm64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -o ./dist/win-arm64
+
+      - name: Build Native x64 (Intel / AMD)
+        run: |
+          dotnet publish src/CRDLightweightARM/CRDLightweightARM.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -o ./dist/win-x64
+
+      - name: Package Dist Archives
+        id: package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path ./dist-packages -Force
+          
+          # Package ARM64 zip
+          Copy-Item "Run-CRD.cmd" "./dist/win-arm64/" -Force
+          Compress-Archive -Path "./dist/win-arm64/CRDLightweightARM.exe", "./dist/win-arm64/Run-CRD.cmd" `
+            -DestinationPath "./dist-packages/CRDLightweightARM-win-arm64.zip" -Force
+            
+          # Package x64 zip
+          Copy-Item "Run-CRD.cmd" "./dist/win-x64/" -Force
+          Compress-Archive -Path "./dist/win-x64/CRDLightweightARM.exe", "./dist/win-x64/Run-CRD.cmd" `
+            -DestinationPath "./dist-packages/CRDLightweightARM-win-x64.zip" -Force
+
+          # Calculate SHA-256 Checksums
+          Get-FileHash ./dist-packages/*.zip -Algorithm SHA256 | ForEach-Object {
+            "$($_.Hash.ToLower())  $([System.IO.Path]::GetFileName($_.Path))"
+          } | Set-Content ./dist-packages/SHA256SUMS.txt
+
+          Get-Content ./dist-packages/SHA256SUMS.txt
+          Get-ChildItem ./dist-packages/ | Format-Table Name, Length
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: CRD-Distribution-Packages
+          path: ./dist-packages/*
+          retention-days: 14
+
+      - name: Determine Release Eligibility
+        id: check_release
+        shell: pwsh
+        run: |
+          $isTag = $env:GITHUB_REF -like "refs/tags/v*"
+          $manualRelease = "${{ github.event.inputs.create_release }}" -eq "true"
+          if ($isTag -or $manualRelease) {
+            echo "should_release=true" >> $env:GITHUB_OUTPUT
+            if ($isTag) {
+              $tag = $env:GITHUB_REF -replace "refs/tags/", ""
+              echo "tag_name=$tag" >> $env:GITHUB_OUTPUT
+            } else {
+              $inputTag = "${{ github.event.inputs.release_tag }}"
+              if (-not $inputTag) {
+                $inputTag = "v1.0." + [int](Get-Date -UFormat %s).Substring(6)
+              }
+              echo "tag_name=$inputTag" >> $env:GITHUB_OUTPUT
+            }
+          } else {
+            echo "should_release=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Publish GitHub Release
+        if: steps.check_release.outputs.should_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.check_release.outputs.tag_name }}
+          name: ${{ steps.check_release.outputs.tag_name }}
+          files: ./dist-packages/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
