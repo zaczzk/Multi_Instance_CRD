@@ -5,6 +5,7 @@
 # Chrome Remote Desktop — Multi_Instance_CRD
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2011%20ARM64%20%7C%20x64-blue.svg)](https://github.com/zaczzk/Multi_Instance_CRD)
+[![Build & Distribute](https://github.com/zaczzk/Multi_Instance_CRD/actions/workflows/build.yml/badge.svg)](https://github.com/zaczzk/Multi_Instance_CRD/actions/workflows/build.yml)
 [![Hardware](https://img.shields.io/badge/Hardware-Qualcomm%20Snapdragon%20X%20Series-orange.svg)](https://github.com/zaczzk/Multi_Instance_CRD)
 [![Target](https://img.shields.io/badge/.NET-9.0--windows%20(Native%20ARM64)-purple.svg)](https://dotnet.microsoft.com/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
