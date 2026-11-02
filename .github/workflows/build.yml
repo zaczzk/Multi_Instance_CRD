@@ -32,12 +32,12 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Setup .NET 9 SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '9.0.x'
 
@@ -106,7 +106,7 @@ jobs:
           Get-ChildItem ./dist-packages/ | Format-Table Name, Length
 
       - name: Upload Build Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: CRD-Distribution-Packages
           path: ./dist-packages/*
@@ -136,7 +136,7 @@ jobs:
 
       - name: Publish GitHub Release
         if: steps.check_release.outputs.should_release == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.check_release.outputs.tag_name }}
           name: Multi_Instance_CRD ${{ steps.check_release.outputs.tag_name }}
