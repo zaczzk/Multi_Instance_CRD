@@ -4,7 +4,9 @@ param(
     [switch]$Run,
     [switch]$PublishStandalone,
     [switch]$PublishFramework,
-    [switch]$PublishAll
+    [switch]$PublishAll,
+    [switch]$BuildInstallers,
+    [string]$Version = "1.0.0"
 )
 
 # Stop any running CRDLightweightARM instances so single-file bundle overwrite never fails
@@ -45,20 +47,65 @@ function Invoke-CodeSign([string]$binaryPath) {
     }
 }
 
-if ($PublishAll) {
-    Write-Host "Publishing Dual-Architecture (ARM64 Snapdragon + x64 Intel/AMD)..." -ForegroundColor Cyan
+function Find-ISCC {
+    $paths = @(
+        "C:\Users\$env:USERNAME\AppData\Local\Programs\Inno Setup 6\ISCC.exe",
+        "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+        "C:\Program Files\Inno Setup 6\ISCC.exe"
+    )
+    foreach ($p in $paths) {
+        if (Test-Path $p) { return $p }
+    }
+    $cmd = Get-Command iscc.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
 
-    Write-Host "1/2 Compiling native ARM64 release..." -ForegroundColor Yellow
+if ($PublishAll -or $BuildInstallers) {
+    Write-Host "==========================================================" -ForegroundColor Cyan
+    Write-Host "Building Full (.NET Included) & Light (.NET Excluded) Dist" -ForegroundColor Cyan
+    Write-Host "==========================================================" -ForegroundColor Cyan
+
+    # 1. Full Self-Contained (.NET Included)
+    Write-Host "1/4 Publishing Full ARM64 (Self-Contained)..." -ForegroundColor Yellow
     & $DotnetPath publish $Project -c Release -r win-arm64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./dist/win-arm64
     Invoke-CodeSign "./dist/win-arm64/CRDLightweightARM.exe"
 
-    Write-Host "2/2 Compiling native x64 release..." -ForegroundColor Yellow
+    Write-Host "2/4 Publishing Full x64 (Self-Contained)..." -ForegroundColor Yellow
     & $DotnetPath publish $Project -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ./dist/win-x64
     Invoke-CodeSign "./dist/win-x64/CRDLightweightARM.exe"
 
-    Write-Host "Dual-Architecture packages published successfully!" -ForegroundColor Green
-    Write-Host "ARM64: ./dist/win-arm64/CRDLightweightARM.exe" -ForegroundColor Green
-    Write-Host "x64:   ./dist/win-x64/CRDLightweightARM.exe" -ForegroundColor Green
+    # 2. Lightweight (.NET Excluded)
+    Write-Host "3/4 Publishing Light ARM64 (Framework-Dependent)..." -ForegroundColor Yellow
+    & $DotnetPath publish $Project -c Release -r win-arm64 --self-contained false -o ./dist-light/win-arm64
+    Invoke-CodeSign "./dist-light/win-arm64/CRDLightweightARM.exe"
+
+    Write-Host "4/4 Publishing Light x64 (Framework-Dependent)..." -ForegroundColor Yellow
+    & $DotnetPath publish $Project -c Release -r win-x64 --self-contained false -o ./dist-light/win-x64
+    Invoke-CodeSign "./dist-light/win-x64/CRDLightweightARM.exe"
+
+    if ($BuildInstallers) {
+        $iscc = Find-ISCC
+        if ($iscc) {
+            Write-Host "`nBuilding Inno Setup Windows Installers (v$Version)..." -ForegroundColor Cyan
+            New-Item -ItemType Directory -Path "./dist-installers" -Force | Out-Null
+            
+            Write-Host "Compiling .NET-Included Installer..." -ForegroundColor Yellow
+            & $iscc "/DAppVersion=$Version" "/DBuildType=full" "installer\Multi_Instance_CRD.iss"
+            Invoke-CodeSign "./dist-installers/Multi_Instance_CRD-Setup-v$Version-DotNetIncluded.exe"
+
+            Write-Host "Compiling Lightweight Installer..." -ForegroundColor Yellow
+            & $iscc "/DAppVersion=$Version" "/DBuildType=light" "installer\Multi_Instance_CRD.iss"
+            Invoke-CodeSign "./dist-installers/Multi_Instance_CRD-Setup-v$Version-Lightweight.exe"
+            
+            Write-Host "`nInstallers built successfully in ./dist-installers/:" -ForegroundColor Green
+            Get-ChildItem "./dist-installers/*" | Format-Table Name, Length
+        } else {
+            Write-Warning "Inno Setup Compiler (ISCC.exe) not found. Skipping installer creation."
+        }
+    }
+
+    Write-Host "`nAll packages published successfully!" -ForegroundColor Green
     exit 0
 }
 

@@ -10,13 +10,15 @@
     <AssemblyName>CRDLightweightARM</AssemblyName>
     <RootNamespace>CRDLightweightARM</RootNamespace>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <!-- Optimized for Windows on ARM64 Snapdragon X Plus -->
+    <!-- Optimized for Windows on ARM64 Snapdragon X Plus and x64 -->
     <RuntimeIdentifiers>win-arm64;win-x64</RuntimeIdentifiers>
+    <!-- Strip satellite resource folders to eliminate bloat -->
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Core WebView2 for WebRTC rendering -->
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3124.44" />
-    <PackageReference Include="System.Text.Json" Version="9.0.2" />
   </ItemGroup>
 
   <ItemGroup>

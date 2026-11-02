@@ -4,7 +4,10 @@
 [Ll]og/
 [Ll]ogs/
 dist/
+dist-light/
 dist-standalone/
+dist-installers/
+dist-packages/
 
 # User-specific files
 *.rsuser

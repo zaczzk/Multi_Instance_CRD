@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   build:
-    name: Compile ARM64 & x64 Dist
+    name: Compile Dual-Arch & Build Installers
     runs-on: windows-latest
     steps:
       - name: Checkout Code
@@ -41,47 +41,67 @@ jobs:
         with:
           dotnet-version: '9.0.x'
 
-      - name: Build Native ARM64 (Snapdragon X)
+      - name: Install Inno Setup
+        shell: pwsh
         run: |
-          dotnet publish src/CRDLightweightARM/CRDLightweightARM.csproj `
-            -c Release `
-            -r win-arm64 `
-            --self-contained true `
-            -p:PublishSingleFile=true `
-            -p:IncludeNativeLibrariesForSelfExtract=true `
-            -o ./dist/win-arm64
+          choco install innosetup --no-progress -y
+          echo "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
 
-      - name: Build Native x64 (Intel / AMD)
+      - name: Extract Version String
+        id: get_version
+        shell: pwsh
         run: |
-          dotnet publish src/CRDLightweightARM/CRDLightweightARM.csproj `
-            -c Release `
-            -r win-x64 `
-            --self-contained true `
-            -p:PublishSingleFile=true `
-            -p:IncludeNativeLibrariesForSelfExtract=true `
-            -o ./dist/win-x64
+          $ver = "1.0.0"
+          if ($env:GITHUB_REF -like "refs/tags/v*") {
+            $ver = ($env:GITHUB_REF -replace "refs/tags/v", "").Trim()
+          } elseif ("${{ github.event.inputs.release_tag }}" -ne "") {
+            $ver = ("${{ github.event.inputs.release_tag }}" -replace "^v", "").Trim()
+          }
+          Write-Host "Configured Version: $ver"
+          echo "version=$ver" >> $env:GITHUB_OUTPUT
 
-      - name: Package Dist Archives
+      - name: Compile Full (.NET Included) & Light (.NET Excluded) Releases
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.get_version.outputs.version }}"
+          .\build.ps1 -BuildInstallers -Version $ver
+
+      - name: Package Release Assets & Checksums
         id: package
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path ./dist-packages -Force
-          
-          # Package ARM64 zip
+          $ver = "${{ steps.get_version.outputs.version }}"
+
+          # 1. Standalone Portable Zips (.NET Included)
           Copy-Item "Run-CRD.cmd" "./dist/win-arm64/" -Force
           Compress-Archive -Path "./dist/win-arm64/CRDLightweightARM.exe", "./dist/win-arm64/Run-CRD.cmd" `
-            -DestinationPath "./dist-packages/CRDLightweightARM-win-arm64.zip" -Force
+            -DestinationPath "./dist-packages/Multi_Instance_CRD-v$ver-win-arm64-Standalone.zip" -Force
             
-          # Package x64 zip
           Copy-Item "Run-CRD.cmd" "./dist/win-x64/" -Force
           Compress-Archive -Path "./dist/win-x64/CRDLightweightARM.exe", "./dist/win-x64/Run-CRD.cmd" `
-            -DestinationPath "./dist-packages/CRDLightweightARM-win-x64.zip" -Force
+            -DestinationPath "./dist-packages/Multi_Instance_CRD-v$ver-win-x64-Standalone.zip" -Force
 
-          # Calculate SHA-256 Checksums
-          Get-FileHash ./dist-packages/*.zip -Algorithm SHA256 | ForEach-Object {
+          # 2. Lightweight Portable Zips (.NET Excluded)
+          Copy-Item "Run-CRD.cmd" "./dist-light/win-arm64/" -Force
+          Compress-Archive -Path "./dist-light/win-arm64/*" `
+            -DestinationPath "./dist-packages/Multi_Instance_CRD-v$ver-win-arm64-Lightweight.zip" -Force
+
+          Copy-Item "Run-CRD.cmd" "./dist-light/win-x64/" -Force
+          Compress-Archive -Path "./dist-light/win-x64/*" `
+            -DestinationPath "./dist-packages/Multi_Instance_CRD-v$ver-win-x64-Lightweight.zip" -Force
+
+          # 3. Windows Installers (Inno Setup)
+          if (Test-Path "./dist-installers") {
+            Copy-Item "./dist-installers/*.exe" "./dist-packages/" -Force
+          }
+
+          # 4. Generate SHA-256 Checksums
+          Get-FileHash ./dist-packages/* -Algorithm SHA256 | ForEach-Object {
             "$($_.Hash.ToLower())  $([System.IO.Path]::GetFileName($_.Path))"
           } | Set-Content ./dist-packages/SHA256SUMS.txt
 
+          Write-Host "`nGenerated Distribution Artifacts:" -ForegroundColor Green
           Get-Content ./dist-packages/SHA256SUMS.txt
           Get-ChildItem ./dist-packages/ | Format-Table Name, Length
 
@@ -106,7 +126,7 @@ jobs:
             } else {
               $inputTag = "${{ github.event.inputs.release_tag }}"
               if (-not $inputTag) {
-                $inputTag = "v1.0." + [int](Get-Date -UFormat %s).Substring(6)
+                $inputTag = "v${{ steps.get_version.outputs.version }}"
               }
               echo "tag_name=$inputTag" >> $env:GITHUB_OUTPUT
             }
@@ -119,7 +139,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.check_release.outputs.tag_name }}
-          name: ${{ steps.check_release.outputs.tag_name }}
+          name: Multi_Instance_CRD ${{ steps.check_release.outputs.tag_name }}
           files: ./dist-packages/*
           generate_release_notes: true
           draft: false
