@@ -140,12 +140,19 @@ public partial class MainWindow : Window
     [DllImport("user32.dll")]
     private static extern bool ClipCursor(IntPtr lpRect);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Auto)]
+    private static extern int ExtractIconEx(string lpszFile, int nIconIndex, out IntPtr phiconLarge, out IntPtr phiconSmall, int nIcons);
+
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT { public int Left, Top, Right, Bottom; }
 
     public MainWindow()
     {
         InitializeComponent();
+        TrySetWindowIcon();
 
         _config = AppConfig.Load();
         _mediatorScript = LoadMediatorScript();
@@ -1787,6 +1794,60 @@ public partial class MainWindow : Window
     private void BtnClose_Click(object sender, RoutedEventArgs e)
     {
         Close();
+    }
+    private void TrySetWindowIcon()
+    {
+        try
+        {
+            // 1. Try loading embedded WPF pack resource
+            var uri = new Uri("pack://application:,,,/CRDLightweightARM;component/app.ico", UriKind.Absolute);
+            var streamInfo = Application.GetResourceStream(uri);
+            if (streamInfo?.Stream != null)
+            {
+                using var s = streamInfo.Stream;
+                Icon = BitmapFrame.Create(s, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+                return;
+            }
+        }
+        catch { }
+
+        try
+        {
+            // 2. Try extracting from running process module/executable
+            string? exePath = Environment.ProcessPath;
+            if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
+            {
+                ExtractIconEx(exePath, 0, out IntPtr hLarge, out _, 1);
+                if (hLarge != IntPtr.Zero)
+                {
+                    Icon = Imaging.CreateBitmapSourceFromHIcon(
+                        hLarge,
+                        Int32Rect.Empty,
+                        BitmapSizeOptions.FromEmptyOptions());
+                    DestroyIcon(hLarge);
+                    return;
+                }
+            }
+        }
+        catch { }
+
+        try
+        {
+            // 3. Fallback to app.ico alongside the binary
+            string? baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            if (!string.IsNullOrEmpty(baseDir))
+            {
+                string icoPath = Path.Combine(baseDir, "app.ico");
+                if (File.Exists(icoPath))
+                {
+                    Icon = BitmapFrame.Create(
+                        new Uri(icoPath, UriKind.Absolute),
+                        BitmapCreateOptions.None,
+                        BitmapCacheOption.OnLoad);
+                }
+            }
+        }
+        catch { }
     }
 
     #endregion
