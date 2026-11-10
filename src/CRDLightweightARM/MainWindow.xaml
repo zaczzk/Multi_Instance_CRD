@@ -65,19 +65,18 @@
                     <Border Width="1" Height="18" Margin="6,0" Background="{StaticResource DividerBrush}" VerticalAlignment="Center"/>
 
                     <!-- View -->
-                    <Button x:Name="BtnSplit" Style="{StaticResource IconButtonStyle}" Content="&#xE90C;" Click="BtnSplit_Click"/>
-                    <Button x:Name="BtnFitMode" Style="{StaticResource IconButtonStyle}" Content="&#xE9A6;" Click="BtnFitMode_Click"/>
-                    <Button x:Name="BtnKeys" Style="{StaticResource IconButtonStyle}" Content="&#xE765;" Click="BtnKeys_Click"
+                    <Button x:Name="BtnSplit" AutomationProperties.Name="Split view" Style="{StaticResource IconButtonStyle}" Content="&#xE90C;" Click="BtnSplit_Click"/>
+                    <Button x:Name="BtnKeys" AutomationProperties.Name="Send keys" Style="{StaticResource IconButtonStyle}" Content="&#xE765;" Click="BtnKeys_Click"
                             ToolTip="Send keys to the remote computer"/>
 
                     <Border Width="1" Height="18" Margin="6,0" Background="{StaticResource DividerBrush}" VerticalAlignment="Center"/>
 
                     <!-- Window -->
-                    <Button x:Name="BtnFullscreen" Style="{StaticResource IconButtonStyle}" Content="&#xE740;" Click="BtnFullscreen_Click"/>
-                    <Button x:Name="BtnPin" Style="{StaticResource IconButtonStyle}" Content="&#xE718;" Click="BtnPin_Click"/>
-                    <Button x:Name="BtnSettings" Style="{StaticResource IconButtonStyle}" Content="&#xE713;" Click="BtnSettings_Click"
+                    <Button x:Name="BtnFullscreen" AutomationProperties.Name="Fullscreen" Style="{StaticResource IconButtonStyle}" Content="&#xE740;" Click="BtnFullscreen_Click"/>
+                    <Button x:Name="BtnPin" AutomationProperties.Name="Pin bar" Style="{StaticResource IconButtonStyle}" Content="&#xE718;" Click="BtnPin_Click"/>
+                    <Button x:Name="BtnSettings" AutomationProperties.Name="Settings" Style="{StaticResource IconButtonStyle}" Content="&#xE713;" Click="BtnSettings_Click"
                             ToolTip="Settings"/>
-                    <Button x:Name="BtnHide" Style="{StaticResource IconButtonStyle}" Content="&#xE921;" Click="BtnHide_Click"/>
+                    <Button x:Name="BtnHide" AutomationProperties.Name="Hide to tray" Style="{StaticResource IconButtonStyle}" Content="&#xE921;" Click="BtnHide_Click"/>
                 </StackPanel>
             </Border>
 

@@ -52,12 +52,11 @@ These work while the app is in front. They use `Ctrl + Alt` so they rarely clash
 | `Ctrl + Alt + 1` / `2` / `3` | Switch to session 1, 2 or 3 |
 | `Ctrl + Alt + Tab` | Next session |
 | `Ctrl + Alt + C` | Split view on / off |
-| `Ctrl + Alt + D` | Fit / Stretch the remote screen |
 | `Ctrl + Alt + F` | Fullscreen on / off |
 | `Ctrl + Alt + B` | Show / hide the top bar |
 | `Ctrl + Alt + R` | Show / hide the app (works from anywhere) |
 
-To change the remote computer's resolution or pick one of its monitors, use Chrome Remote Desktop's own side panel (the arrow on the right edge of the session).
+To fill the window without black bars, turn on **Resize desktop to fit** in Chrome Remote Desktop's own side panel (the arrow on the right edge of the session). The same panel picks which of the remote computer's monitors to show.
 
 ---
 

@@ -46,7 +46,7 @@
             <!-- Header (drag to move) -->
             <Grid Grid.Row="0" Background="Transparent" MouseLeftButtonDown="Header_MouseLeftButtonDown" Margin="24,18,12,6">
                 <TextBlock Text="Settings" FontSize="20" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center"/>
-                <Button Style="{StaticResource IconButtonStyle}" Content="&#xE8BB;" FontSize="11" HorizontalAlignment="Right"
+                <Button AutomationProperties.Name="Close" Style="{StaticResource IconButtonStyle}" Content="&#xE8BB;" FontSize="11" HorizontalAlignment="Right"
                         Click="Cancel_Click" ToolTip="Close (Esc)"/>
             </Grid>
 

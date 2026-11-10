@@ -37,9 +37,6 @@ public class AppConfig
     public bool PinBar { get; set; } = false;
 
     public int BarRevealDelayMs { get; set; } = 220;
-
-    /// <summary>How the remote screen fits the window: contain (fit) or fill (stretch).</summary>
-    public string FitMode { get; set; } = "contain";
     public bool StartFullscreen { get; set; } = true;
     public bool MinimizeToTrayOnClose { get; set; } = true;
     public bool GlobalHotkeyEnabled { get; set; } = true;
@@ -94,7 +91,6 @@ public class AppConfig
         }
         Sessions = normalized;
         BarRevealDelayMs = Math.Clamp(BarRevealDelayMs, 0, 2000);
-        if (FitMode is not ("contain" or "fill")) FitMode = "contain"; // "cover" (zoom) was removed
     }
 
     /// <summary>Carries over settings from versions before the 2026 refactor that were renamed.</summary>

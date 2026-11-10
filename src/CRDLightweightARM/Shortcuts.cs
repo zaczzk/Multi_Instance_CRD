@@ -7,7 +7,6 @@ public enum ShortcutAction
     Session3,
     NextSession,
     ToggleSplit,
-    CycleFitMode,
     ToggleFullscreen,
     ToggleBar,
 }
@@ -28,7 +27,6 @@ public static class Shortcuts
         new(0x33, 0x63, ShortcutAction.Session3,         "Ctrl + Alt + 3", "Switch to session 3"),
         new(0x09, 0,    ShortcutAction.NextSession,      "Ctrl + Alt + Tab", "Next session"),
         new(0x43, 0,    ShortcutAction.ToggleSplit,      "Ctrl + Alt + C", "Split view on / off"),
-        new(0x44, 0,    ShortcutAction.CycleFitMode,     "Ctrl + Alt + D", "Fit / Stretch"),
         new(0x46, 0,    ShortcutAction.ToggleFullscreen, "Ctrl + Alt + F", "Fullscreen on / off"),
         new(0x42, 0,    ShortcutAction.ToggleBar,        "Ctrl + Alt + B", "Show / hide the top bar"),
     };

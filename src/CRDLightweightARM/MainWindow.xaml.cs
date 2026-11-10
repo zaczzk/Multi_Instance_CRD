@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
@@ -40,14 +41,6 @@ public partial class MainWindow : Window
         public CoreWebView2? Core => View.CoreWebView2;
     }
 
-    private sealed record FitMode(string Css, string Glyph, string Label);
-
-    private static readonly FitMode[] FitModes =
-    {
-        new("contain", "", "Fit to window"),
-        new("fill", "", "Stretch to fill"),
-    };
-
     private sealed record KeyDef(string Key, string Code, int VirtualKey, int ModifierBit, int Location = 0);
 
     private static readonly KeyDef KeyCtrl = new("Control", "ControlLeft", 0x11, 2, 1);
@@ -72,7 +65,6 @@ public partial class MainWindow : Window
     private bool _split;
     private int _splitLeft = 1;
     private int _splitRight = 2;
-    private int _fitIndex;
     private bool _isFullscreen;
     private bool _exiting;
     private bool _trayHintShown;
@@ -106,7 +98,6 @@ public partial class MainWindow : Window
 
         _config = AppConfig.Load();
         _mediatorScript = LoadMediatorScript();
-        _fitIndex = Math.Max(0, Array.FindIndex(FitModes, m => m.Css == _config.FitMode));
 
         _slots = new[]
         {
@@ -272,7 +263,6 @@ public partial class MainWindow : Window
         core.NavigationCompleted += (_, _) =>
         {
             slot.UnresponsiveSince = null;
-            RunScript(core, $"window.__crdSetFitMode && window.__crdSetFitMode('{FitModes[_fitIndex].Css}');");
             ApplySessionActivity(slot);
         };
 
@@ -416,6 +406,7 @@ public partial class MainWindow : Window
                 _ => ConnState.Idle,
             };
             if (slot.State != ConnState.Connected) slot.Stats = null;
+            else ApplySessionActivity(slot); // a background session that just connected should start paused
             RefreshPills();
         }
         else if (msg.StartsWith("{\"type\":\"STATS\"", StringComparison.Ordinal))
@@ -516,9 +507,11 @@ public partial class MainWindow : Window
         if (_split)
         {
             _splitLeft = _current;
-            _splitRight = _lastBackground != _current && _lastBackground is >= 1 and <= AppConfig.SessionCount
-                ? _lastBackground
-                : _current % AppConfig.SessionCount + 1;
+            // Second pane: the last session you were in, unless another one is connected and it isn't.
+            var others = _slots.Where(s => s.Index != _current).ToList();
+            var last = others.FirstOrDefault(s => s.Index == _lastBackground);
+            _splitRight = (last != null && last.State == ConnState.Connected ? last
+                : others.FirstOrDefault(s => s.State == ConnState.Connected) ?? last ?? others[0]).Index;
             ResetSplitRatio();
         }
         ApplyLayout();
@@ -623,18 +616,6 @@ public partial class MainWindow : Window
             slot.Thumbnail = bitmap;
         }
         catch { }
-    }
-
-    private void CycleFitMode()
-    {
-        _fitIndex = (_fitIndex + 1) % FitModes.Length;
-        _config.FitMode = FitModes[_fitIndex].Css;
-        _config.Save();
-        foreach (var slot in _slots)
-        {
-            RunScript(slot.Core, $"window.__crdSetFitMode && window.__crdSetFitMode('{FitModes[_fitIndex].Css}');");
-        }
-        UpdateBarButtons();
     }
 
     #endregion
@@ -861,16 +842,24 @@ public partial class MainWindow : Window
                 ConnState.Failed => "StatusFailedBrush",
                 _ => "StatusIdleBrush",
             });
+            // What a screen reader announces for the tab, e.g. "Session 1: DESKTOP-LLM, connected, current".
+            AutomationProperties.SetName(slot.Pill,
+                $"Session {slot.Index}: {slot.Label.Text}, {StatusText(slot.State).ToLowerInvariant()}{(focused ? ", current" : "")}");
         }
         if (ThumbnailPopup.IsOpen && _hoveredSlot > 0) UpdatePeekText(SlotAt(_hoveredSlot));
         _trayIcon.UpdateTooltip($"Multi-Instance CRD — {_config.GetSession(_current).DisplayName}");
     }
 
+    private static string StatusText(ConnState state) => state switch
+    {
+        ConnState.Connected => "Connected",
+        ConnState.Connecting => "Connecting…",
+        ConnState.Failed => "Connection failed",
+        _ => "Not connected",
+    };
+
     private void UpdateBarButtons()
     {
-        var fit = FitModes[_fitIndex];
-        BtnFitMode.Content = fit.Glyph;
-        BtnFitMode.ToolTip = $"{fit.Label} — click to change  ({Shortcuts.KeysFor(ShortcutAction.CycleFitMode)})";
         BtnSplit.Foreground = (Brush)FindResource(_split ? "AccentBrush" : "TextPrimaryBrush");
         BtnSplit.ToolTip = $"{(_split ? "Turn off split view" : "Split view: two sessions side by side")}  ({Shortcuts.KeysFor(ShortcutAction.ToggleSplit)})";
         BtnFullscreen.Content = _isFullscreen ? "" : "";
@@ -896,14 +885,7 @@ public partial class MainWindow : Window
 
     private void UpdatePeekText(Slot slot)
     {
-        string status = slot.State switch
-        {
-            ConnState.Connected => "Connected",
-            ConnState.Connecting => "Connecting…",
-            ConnState.Failed => "Connection failed",
-            _ => "Not connected",
-        };
-        var lines = new List<string> { $"{_config.GetSession(slot.Index).DisplayName} · {status}" };
+        var lines = new List<string> { $"{_config.GetSession(slot.Index).DisplayName} · {StatusText(slot.State)}" };
         if (slot.Stats != null && slot.State == ConnState.Connected) lines.Add(slot.Stats);
         lines.Add(slot.Index == _current ? "Current session" : $"Click to switch  ({Shortcuts.KeysFor((ShortcutAction)(slot.Index - 1))})");
         TxtThumbnail.Text = string.Join("\n", lines);
@@ -926,7 +908,6 @@ public partial class MainWindow : Window
     }
 
     private void BtnSplit_Click(object sender, RoutedEventArgs e) => ToggleSplit();
-    private void BtnFitMode_Click(object sender, RoutedEventArgs e) => CycleFitMode();
     private void BtnKeys_Click(object sender, RoutedEventArgs e) => KeysPopup.IsOpen = !KeysPopup.IsOpen;
     private void BtnFullscreen_Click(object sender, RoutedEventArgs e) => ToggleFullscreen();
     private void BtnPin_Click(object sender, RoutedEventArgs e) => SetPinned(!_config.PinBar);
@@ -1045,7 +1026,6 @@ public partial class MainWindow : Window
             case ShortcutAction.Session3: SwitchToSession(3); break;
             case ShortcutAction.NextSession: CycleNextSession(); break;
             case ShortcutAction.ToggleSplit: ToggleSplit(); break;
-            case ShortcutAction.CycleFitMode: CycleFitMode(); break;
             case ShortcutAction.ToggleFullscreen: ToggleFullscreen(); break;
             case ShortcutAction.ToggleBar: ToggleBar(); break;
         }
