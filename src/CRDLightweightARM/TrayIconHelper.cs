@@ -1,5 +1,3 @@
-using System;
-using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -7,10 +5,10 @@ using System.Windows.Interop;
 
 namespace CRDLightweightARM;
 
-public class TrayIconHelper : IDisposable
+/// <summary>Minimal Shell_NotifyIcon wrapper (WPF has no tray icon control).</summary>
+public sealed class TrayIconHelper : IDisposable
 {
-    private const int WM_USER = 0x0400;
-    public const int WM_TRAYICON = WM_USER + 1024;
+    private const int WM_TRAYICON = 0x0400 + 1024;
 
     private const uint NIM_ADD = 0x00000000;
     private const uint NIM_MODIFY = 0x00000001;
@@ -20,12 +18,10 @@ public class TrayIconHelper : IDisposable
     private const uint NIF_ICON = 0x00000002;
     private const uint NIF_TIP = 0x00000004;
     private const uint NIF_INFO = 0x00000010;
-
     private const uint NIIF_INFO = 0x00000001;
 
     private const int WM_LBUTTONUP = 0x0202;
     private const int WM_RBUTTONUP = 0x0205;
-    private const int WM_LBUTTONDBLCLK = 0x0203;
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct NOTIFYICONDATA
@@ -53,58 +49,50 @@ public class TrayIconHelper : IDisposable
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern bool Shell_NotifyIcon(uint dwMessage, ref NOTIFYICONDATA lpData);
 
-    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern uint RegisterWindowMessage(string lpString);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr LoadIcon(IntPtr hInstance, IntPtr lpIconName);
 
-    [DllImport("shell32.dll", CharSet = CharSet.Auto)]
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
     private static extern int ExtractIconEx(string lpszFile, int nIconIndex, out IntPtr phiconLarge, out IntPtr phiconSmall, int nIcons);
 
-    [DllImport("kernel32.dll", CharSet = CharSet.Auto)]
-    private static extern IntPtr GetModuleHandle(string? lpModuleName);
+    [DllImport("user32.dll")]
+    private static extern bool DestroyIcon(IntPtr hIcon);
 
     public event Action? LeftClick;
     public event Action? RightClick;
-    public event Action? DoubleClick;
 
     private IntPtr _hwnd = IntPtr.Zero;
     private IntPtr _hIcon = IntPtr.Zero;
-    private bool _isCreated = false;
-    private uint _wmTaskbarCreated = 0;
-    private string _currentTip = "Chrome Remote Desktop (Lightweight)";
+    private bool _ownsIcon;
+    private bool _isCreated;
+    private uint _wmTaskbarCreated;
+    private string _currentTip = "Multi-Instance CRD";
 
     public void Initialize(Window window, string tooltip)
     {
         _currentTip = tooltip;
-        var helper = new WindowInteropHelper(window);
-        _hwnd = helper.EnsureHandle();
-
+        _hwnd = new WindowInteropHelper(window).EnsureHandle();
         _wmTaskbarCreated = RegisterWindowMessage("TaskbarCreated");
 
-        // Load custom application icon (PC + Wi-Fi) or fallback
+        // The app icon is a Win32 resource in both the managed .dll and the .exe (ApplicationIcon).
+        // Prefer the .dll: when started as `dotnet CRDLightweightARM.dll` (Run-CRD.cmd) the process is dotnet.exe.
+        // Single-file builds have no assembly location, so they fall back to the .exe.
         try
         {
-            string icoPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "app.ico");
-            if (File.Exists(icoPath))
+            var iconSource = typeof(TrayIconHelper).Assembly.Location;
+            if (string.IsNullOrEmpty(iconSource) || !File.Exists(iconSource)) iconSource = Environment.ProcessPath;
+            if (!string.IsNullOrEmpty(iconSource) && File.Exists(iconSource))
             {
-                ExtractIconEx(icoPath, 0, out _, out _hIcon, 1);
+                ExtractIconEx(iconSource, 0, out var large, out _hIcon, 1);
+                if (large != IntPtr.Zero) DestroyIcon(large);
+                _ownsIcon = _hIcon != IntPtr.Zero;
             }
-
             if (_hIcon == IntPtr.Zero)
             {
-                string? exePath = Environment.ProcessPath;
-                if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
-                {
-                    ExtractIconEx(exePath, 0, out _, out _hIcon, 1);
-                }
-            }
-
-            if (_hIcon == IntPtr.Zero)
-            {
-                var hModule = GetModuleHandle(null);
-                _hIcon = LoadIcon(hModule, (IntPtr)32512); // IDI_APPLICATION fallback
+                _hIcon = LoadIcon(IntPtr.Zero, (IntPtr)32512); // IDI_APPLICATION (shared, not destroyed)
             }
         }
         catch
@@ -120,47 +108,35 @@ public class TrayIconHelper : IDisposable
         if (msg == WM_TRAYICON)
         {
             int mouseMsg = lParam.ToInt32();
-            if (mouseMsg == WM_LBUTTONUP)
-            {
-                LeftClick?.Invoke();
-            }
-            else if (mouseMsg == WM_RBUTTONUP)
-            {
-                RightClick?.Invoke();
-            }
-            else if (mouseMsg == WM_LBUTTONDBLCLK)
-            {
-                DoubleClick?.Invoke();
-            }
+            if (mouseMsg == WM_LBUTTONUP) LeftClick?.Invoke();
+            else if (mouseMsg == WM_RBUTTONUP) RightClick?.Invoke();
         }
         else if (_wmTaskbarCreated != 0 && msg == _wmTaskbarCreated)
         {
-            // Explorer restarted: recreate tray icon
+            // Explorer restarted: the icon has to be added again.
             CreateIcon();
         }
     }
 
     public void UpdateTooltip(string tip)
     {
-        _currentTip = tip;
-        if (!_isCreated || _hwnd == IntPtr.Zero) return;
+        _currentTip = tip.Length > 127 ? tip[..127] : tip;
+        if (!_isCreated) return;
 
         var nid = CreateNotifyData();
         nid.uFlags = NIF_TIP;
-        nid.szTip = tip;
         Shell_NotifyIcon(NIM_MODIFY, ref nid);
     }
 
     public void ShowNotification(string title, string text)
     {
-        if (!_isCreated || _hwnd == IntPtr.Zero) return;
+        if (!_isCreated) return;
 
         var nid = CreateNotifyData();
         nid.uFlags = NIF_INFO;
         nid.szInfoTitle = title;
         nid.szInfo = text;
         nid.dwInfoFlags = NIIF_INFO;
-        nid.uTimeoutOrVersion = 3000;
         Shell_NotifyIcon(NIM_MODIFY, ref nid);
     }
 
@@ -172,31 +148,31 @@ public class TrayIconHelper : IDisposable
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
         nid.hIcon = _hIcon;
-        nid.szTip = _currentTip;
-
         _isCreated = Shell_NotifyIcon(NIM_ADD, ref nid);
     }
 
-    private NOTIFYICONDATA CreateNotifyData()
+    private NOTIFYICONDATA CreateNotifyData() => new()
     {
-        return new NOTIFYICONDATA
-        {
-            cbSize = (uint)Marshal.SizeOf(typeof(NOTIFYICONDATA)),
-            hWnd = _hwnd,
-            uID = 1001,
-            szTip = _currentTip,
-            szInfo = string.Empty,
-            szInfoTitle = string.Empty
-        };
-    }
+        cbSize = (uint)Marshal.SizeOf<NOTIFYICONDATA>(),
+        hWnd = _hwnd,
+        uID = 1001,
+        szTip = _currentTip,
+        szInfo = string.Empty,
+        szInfoTitle = string.Empty,
+    };
 
     public void Dispose()
     {
-        if (_isCreated && _hwnd != IntPtr.Zero)
+        if (_isCreated)
         {
             var nid = CreateNotifyData();
             Shell_NotifyIcon(NIM_DELETE, ref nid);
             _isCreated = false;
         }
+        if (_ownsIcon && _hIcon != IntPtr.Zero)
+        {
+            DestroyIcon(_hIcon);
+        }
+        _hIcon = IntPtr.Zero;
     }
 }

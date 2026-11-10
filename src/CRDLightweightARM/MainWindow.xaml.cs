@@ -5,149 +5,99 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
+using Ellipse = System.Windows.Shapes.Ellipse;
 using System.Windows.Threading;
-using CRDLightweightARM.Hardware;
-using CRDLightweightARM.NativeProtocol;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
+using static CRDLightweightARM.NativeMethods;
 
 namespace CRDLightweightARM;
 
 public partial class MainWindow : Window
 {
-    private AppConfig _config;
-    private CoreWebView2Environment? _webViewEnvironment;
-    private int _currentSessionIndex = 1;
-    private readonly DispatcherTimer _dwellTimer;
-    private readonly DispatcherTimer _collapseDebounceTimer;
-    private bool _isNotchVisible = true;
-    private bool _isPinned = true;
-    private readonly string _mediatorScript;
+    private enum ConnState { Idle, Connecting, Connected, Failed }
 
-    // Owned Layered HUD Window that floats above WebView2's Win32 HwndHost (fixes WPF Airspace issue)
-    private Window? _hudWindow;
-
-    // Scoped Win32 Low-Level Keyboard Hook (prevents CRD navigator.keyboard.lock from swallowing Ctrl+Alt+*)
-    private IntPtr _hKeyboardHook = IntPtr.Zero;
-    private LowLevelKeyboardProc? _keyboardHookDelegate;
-
-    // QoL & Snapdragon Hardware Subsystems
-    private readonly WindowsPowerGovernor _powerGovernor = new();
-    private readonly SnapdragonOryonGovernor _oryonGovernor = SnapdragonOryonGovernor.Instance;
-    private readonly RawInputMouseEngine _rawMouseEngine = new();
-    private readonly TrayIconHelper _trayIcon = new();
-    private readonly Dictionary<int, ImageSource> _sessionThumbnails = new();
-    private int _hoveredSessionIndex = 1;
-    private readonly DispatcherTimer _thumbnailCloseTimer;
-    private readonly DispatcherTimer _activeThumbnailTimer;
-    private int _remoteMonitorIndex = 0; // 0 = Mon 1, 1 = Mon 2, 2 = All
-    private readonly string[] _displayModes = { "contain", "fill", "cover" };
-    private int _displayModeIndex = 0; // 0 = Fit, 1 = Stretch, 2 = Zoom
-    private bool _isCockpitMode = false;
-    private int _cockpitSecondaryIndex = 2;
-    private bool _isRelativeMouseActive = false;
-    private DateTime _lastSwipeTime = DateTime.MinValue;
-    private DateTime _lastRawDeltaDispatch = DateTime.MinValue;
-    private int _accumulatedRawDx = 0;
-    private int _accumulatedRawDy = 0;
-    private bool _isExplicitExit = false;
-    private int _switchSequence = 0;
-    private HwndSource? _hwndSource;
-    private PhysicalDisplayTopology _displayTopology;
-
-    private const int HOTKEY_SUMMON_ID = 9001;
-    private const int HOTKEY_SUMMON_FALLBACK_ID = 9002;
-    private const uint MOD_ALT = 0x0001;
-    private const uint MOD_CONTROL = 0x0002;
-    private const uint MOD_SHIFT = 0x0004;
-    private const uint MOD_NOREPEAT = 0x4000;
-    private const uint VK_R = 0x52;
-    private const uint VK_F12 = 0x7B;
-    private const int WM_HOTKEY = 0x0312;
-
-    // Win32 Low-Level Keyboard Hook Constants
-    private const int WH_KEYBOARD_LL = 13;
-    private const int WM_KEYDOWN = 0x0100;
-    private const int WM_SYSKEYDOWN = 0x0104;
-    private const int VK_CONTROL = 0x11;
-    private const int VK_MENU = 0x12; // Alt
-    private const int VK_SHIFT = 0x10;
-
-    private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct KBDLLHOOKSTRUCT
+    /// <summary>Everything the window tracks for one session slot.</summary>
+    private sealed class Slot
     {
-        public uint vkCode;
-        public uint scanCode;
-        public uint flags;
-        public uint time;
-        public IntPtr dwExtraInfo;
+        public required int Index { get; init; }
+        public required WebView2 View { get; init; }
+        public Button Pill { get; set; } = null!;
+        public Ellipse Dot { get; set; } = null!;
+        public TextBlock Label { get; set; } = null!;
+        public ConnState State { get; set; } = ConnState.Idle;
+        public string? Stats { get; set; }
+        public ImageSource? Thumbnail { get; set; }
+        public DateTime LastExternalOpen { get; set; }
+        public DateTime? UnresponsiveSince { get; set; }
+        public List<DateTime> RecentCrashes { get; } = new();
+        public CoreWebView2? Core => View.CoreWebView2;
     }
 
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+    private sealed record FitMode(string Css, string Glyph, string Label);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+    private static readonly FitMode[] FitModes =
+    {
+        new("contain", "", "Fit to window"),
+        new("fill", "", "Stretch to fill"),
+    };
 
-    [DllImport("user32.dll")]
-    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+    private sealed record KeyDef(string Key, string Code, int VirtualKey, int ModifierBit, int Location = 0);
 
-    [DllImport("user32.dll")]
-    private static extern short GetAsyncKeyState(int vKey);
+    private static readonly KeyDef KeyCtrl = new("Control", "ControlLeft", 0x11, 2, 1);
+    private static readonly KeyDef KeyAlt = new("Alt", "AltLeft", 0x12, 1, 1);
+    private static readonly KeyDef KeyShift = new("Shift", "ShiftLeft", 0x10, 8, 1);
+    private static readonly KeyDef KeyMeta = new("Meta", "MetaLeft", 0x5B, 4, 1);
+    private static readonly KeyDef KeyDelete = new("Delete", "Delete", 0x2E, 0);
+    private static readonly KeyDef KeyEscape = new("Escape", "Escape", 0x1B, 0);
+    private static readonly KeyDef KeyD = new("d", "KeyD", 0x44, 0);
 
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
-    private const uint GA_ROOT = 2;
-    private const uint GA_ROOTOWNER = 3;
+    private const int HotkeyShowHideId = 9001;
+    private const uint VK_R = 0x52;
 
-    [DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(IntPtr hWnd);
+    private readonly AppConfig _config;
+    private readonly string _mediatorScript;
+    private readonly Slot[] _slots;
+    private readonly TrayIconHelper _trayIcon = new();
+    private CoreWebView2Environment? _webViewEnvironment;
 
-    [DllImport("user32.dll")]
-    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr lpdwProcessId);
+    private int _current = 1;
+    private int _lastBackground = 2;
+    private bool _split;
+    private int _splitLeft = 1;
+    private int _splitRight = 2;
+    private int _fitIndex;
+    private bool _isFullscreen;
+    private bool _exiting;
+    private bool _trayHintShown;
+    private WindowState _lastWindowState = WindowState.Normal;
 
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetForegroundWindow();
+    // Top bar
+    private Window? _barWindow;
+    private bool _barVisible = true;
+    private readonly DispatcherTimer _revealTimer = new() { Interval = TimeSpan.FromMilliseconds(80) };
+    private readonly DispatcherTimer _hideTimer = new() { Interval = TimeSpan.FromMilliseconds(700) };
+    private readonly DispatcherTimer _thumbnailCloseTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    // Previews of on-screen sessions, so hovering a tab later shows a recent picture. Infrequent on purpose.
+    private readonly DispatcherTimer _thumbnailRefreshTimer = new() { Interval = TimeSpan.FromSeconds(15) };
+    private DateTime? _revealDwellStart;
+    private int _hoveredSlot;
 
-    [DllImport("user32.dll")]
-    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+    // Shortcuts
+    private IntPtr _keyboardHook = IntPtr.Zero;
+    private LowLevelKeyboardProc? _keyboardHookProc;
+    private bool _globalHotkeyRegistered;
+    private SettingsWindow? _settingsDialog;
 
-    [DllImport("user32.dll")]
-    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-    [DllImport("kernel32.dll")]
-    private static extern uint GetCurrentThreadId();
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Auto)]
-    private static extern IntPtr GetModuleHandle(string? lpModuleName);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
-
-    [DllImport("user32.dll")]
-    private static extern bool ClipCursor(ref RECT lpRect);
-
-    [DllImport("user32.dll")]
-    private static extern bool ClipCursor(IntPtr lpRect);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool DestroyIcon(IntPtr hIcon);
-
-    [DllImport("shell32.dll", CharSet = CharSet.Auto)]
-    private static extern int ExtractIconEx(string lpszFile, int nIconIndex, out IntPtr phiconLarge, out IntPtr phiconSmall, int nIcons);
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct RECT { public int Left, Top, Right, Bottom; }
+    private IntPtr Handle => new WindowInteropHelper(this).Handle;
+    private Slot CurrentSlot => _slots[_current - 1];
+    private Slot SlotAt(int index) => _slots[index - 1];
 
     public MainWindow()
     {
@@ -156,321 +106,987 @@ public partial class MainWindow : Window
 
         _config = AppConfig.Load();
         _mediatorScript = LoadMediatorScript();
+        _fitIndex = Math.Max(0, Array.FindIndex(FitModes, m => m.Css == _config.FitMode));
 
-        _dwellTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(_config.NotchDwellMs) };
-        _dwellTimer.Tick += DwellTimer_Tick;
-
-        _collapseDebounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
-        _collapseDebounceTimer.Tick += CollapseDebounceTimer_Tick;
-
-        _thumbnailCloseTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(280) };
-        _thumbnailCloseTimer.Tick += (s, e) =>
+        _slots = new[]
         {
-            _thumbnailCloseTimer.Stop();
-            ThumbnailPeekPopup.IsOpen = false;
+            new Slot { Index = 1, View = WebViewSession1 },
+            new Slot { Index = 2, View = WebViewSession2 },
+            new Slot { Index = 3, View = WebViewSession3 },
         };
+        BuildSessionPills();
 
-        _activeThumbnailTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
-        _activeThumbnailTimer.Tick += async (s, e) =>
-        {
-            var wv = GetWebViewByIndex(_currentSessionIndex);
-            if (wv?.CoreWebView2 != null && !_isCockpitMode && Visibility == Visibility.Visible)
-            {
-                await CaptureSessionThumbnailAsync(_currentSessionIndex, wv);
-            }
-        };
-        _activeThumbnailTimer.Start();
+        _revealTimer.Tick += RevealTimer_Tick;
+        _hideTimer.Tick += HideTimer_Tick;
+        _thumbnailCloseTimer.Tick += (_, _) => { _thumbnailCloseTimer.Stop(); ThumbnailPopup.IsOpen = false; };
+        _thumbnailRefreshTimer.Tick += (_, _) => CaptureShownSessions();
 
+        ApplyWindowMode(_config.StartFullscreen);
+
+        SourceInitialized += (_, _) => UseDarkTitleBar(Handle);
         Loaded += MainWindow_Loaded;
-        LocationChanged += (_, _) => SyncHudWindowBounds();
-        SizeChanged += (_, _) => SyncHudWindowBounds();
-        StateChanged += (_, _) => SyncHudWindowBounds();
-        DpiChanged += (_, _) => SyncHudWindowBounds();
+        LocationChanged += (_, _) => PositionBar();
+        SizeChanged += (_, _) => PositionBar();
+        StateChanged += MainWindow_StateChanged;
         Closing += MainWindow_Closing;
         Closed += MainWindow_Closed;
     }
 
-    /// <summary>
-    /// Loads crd-mediator.js from EmbeddedResource first (guaranteeing single-file standalone .exe works),
-    /// with external file override support.
-    /// </summary>
+    #region Startup
+
     private static string LoadMediatorScript()
+    {
+        var asm = Assembly.GetExecutingAssembly();
+        var name = asm.GetManifestResourceNames().FirstOrDefault(n => n.EndsWith("crd-mediator.js", StringComparison.OrdinalIgnoreCase));
+        if (name == null) return string.Empty;
+        using var stream = asm.GetManifestResourceStream(name);
+        if (stream == null) return string.Empty;
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
+    }
+
+    private void TrySetWindowIcon()
     {
         try
         {
-            var mediatorPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crd-mediator.js");
-            if (File.Exists(mediatorPath))
+            var info = Application.GetResourceStream(new Uri("pack://application:,,,/CRDLightweightARM;component/app.ico"));
+            if (info?.Stream != null)
             {
-                return File.ReadAllText(mediatorPath);
+                using var s = info.Stream;
+                Icon = BitmapFrame.Create(s, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
             }
         }
-        catch {}
-
-        try
-        {
-            var asm = Assembly.GetExecutingAssembly();
-            var resourceName = asm.GetManifestResourceNames()
-                .FirstOrDefault(n => n.EndsWith("crd-mediator.js", StringComparison.OrdinalIgnoreCase));
-            if (resourceName != null)
-            {
-                using var stream = asm.GetManifestResourceStream(resourceName);
-                if (stream != null)
-                {
-                    using var reader = new StreamReader(stream);
-                    return reader.ReadToEnd();
-                }
-            }
-        }
-        catch {}
-
-        return string.Empty;
+        catch { }
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
-        // 1. Pin UI/Input/SwapChain thread to Snapdragon Oryon performance cores via MMCSS ("Games")
-        _oryonGovernor.PromoteMainThreadForLowLatency();
+        HwndSource.FromHwnd(Handle)?.AddHook(WndProc);
 
-        var handle = new WindowInteropHelper(this).EnsureHandle();
-        _displayTopology = DisplayTopologyDetector.DetectTopology(handle);
+        CreateBarWindow();
+        InstallKeyboardHook();
 
-        // 2. Mount HudOverlayRoot inside an Owned Layered Window so WebView2's Win32 HWND
-        //    can NEVER cover the Top Notch Pill, Hover Trigger, Popups, or Settings Modal!
-        InitializeHudOverlayWindow();
-
-        // Update Top Notch & Settings Banners with real hardware probe metrics
-        TxtNativeRes.Text = _displayTopology.AspectRatio;
-        BtnNativeRes.ToolTip = $"Negotiate Native {_displayTopology.PhysicalWidth}×{_displayTopology.PhysicalHeight} ({_displayTopology.AspectRatio} @ {_displayTopology.DpiX} DPI) via VideoLayout Protobuf (Ctrl+Alt+N)";
-        TxtHardwareBanner.Text = _oryonGovernor.HardwareBadge;
-        TxtDisplayBanner.Text = $"Native Panel: {_displayTopology.PhysicalWidth}×{_displayTopology.PhysicalHeight} ({_displayTopology.AspectRatio}) @ {_displayTopology.RefreshRateHz}Hz • {_displayTopology.DpiX} DPI • MMCSS High-Priority + EcoQoS Active";
-
-        // 3. Initialize Power Governor, Win32 WM_INPUT Raw Mouse Engine, & Low-Level Keyboard Hook
-        _powerGovernor.Initialize(this);
-        _powerGovernor.PowerSourceChanged += PowerGovernor_PowerSourceChanged;
-
-        _rawMouseEngine.RawMouseDeltaCallback = OnRawHardwareMouseDelta;
-        _rawMouseEngine.Attach(handle, enableInputSink: false);
-
-        InstallLowLevelKeyboardHook();
-
-        _hwndSource = HwndSource.FromHwnd(handle);
-        _hwndSource?.AddHook(HwndMessageHook);
-
-        _trayIcon.Initialize(this, $"CRD ({_oryonGovernor.HardwareBadge})");
+        _trayIcon.Initialize(this, "Multi-Instance CRD");
+        UpdateGlobalHotkey(); // after the tray icon exists, so a clash can be reported there
         _trayIcon.LeftClick += ToggleWindowVisibility;
-        _trayIcon.RightClick += ShowTrayContextMenu;
-        _trayIcon.DoubleClick += ToggleWindowVisibility;
+        _trayIcon.RightClick += ShowTrayMenu;
 
-        if (_config.GlobalHotkeyEnabled)
+        RefreshPills();
+        UpdateBarButtons();
+
+        try
         {
-            bool ok = RegisterHotKey(handle, HOTKEY_SUMMON_ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_R);
-            if (!ok)
-            {
-                RegisterHotKey(handle, HOTKEY_SUMMON_FALLBACK_ID, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_F12);
-            }
+            var userDataFolder = Path.Combine(AppConfig.DataDirectory, "User Data");
+            // Background sessions are hidden WebViews; keep Chromium from throttling them into a disconnect.
+            var options = new CoreWebView2EnvironmentOptions(
+                "--disable-background-timer-throttling --disable-backgrounding-occluded-windows " +
+                "--disable-renderer-backgrounding --autoplay-policy=no-user-gesture-required");
+            _webViewEnvironment = await CoreWebView2Environment.CreateAsync(null, userDataFolder, options);
         }
-
-        UpdateLabelsFromConfig();
-        await InitializeWebViewEnvironmentAsync();
-        await InitializeSessionAsync(1, WebViewSession1);
-        await InitializeSessionAsync(2, WebViewSession2);
-        await InitializeSessionAsync(3, WebViewSession3);
-
-        SwitchToSession(1);
-    }
-
-    #region Owned Layered HUD Window (Solves WPF WebView2 HwndHost Airspace)
-
-    private void InitializeHudOverlayWindow()
-    {
-        if (_hudWindow != null) return;
-
-        // Detach HudOverlayRoot from MainWindow's visual tree and host it in a transparent Owned Window
-        RootGrid.Children.Remove(HudOverlayRoot);
-
-        _hudWindow = new Window
+        catch (WebView2RuntimeNotFoundException)
         {
-            Title = "CRDLightweightARM_HudOverlay",
-            WindowStyle = WindowStyle.None,
-            AllowsTransparency = true,
-            Background = null, // Alpha=0 pixels pass mouse clicks straight through to WebView2!
-            ResizeMode = ResizeMode.NoResize,
-            ShowInTaskbar = false,
-            ShowActivated = false,
-            Owner = this,
-            Content = HudOverlayRoot
-        };
-
-        _hudWindow.KeyDown += Window_KeyDown;
-        _hudWindow.PreviewMouseWheel += Window_PreviewMouseWheel;
-
-        SyncHudWindowBounds();
-        _hudWindow.Show();
-    }
-
-    private void SyncHudWindowBounds()
-    {
-        if (_hudWindow == null) return;
-
-        if (Visibility != Visibility.Visible || WindowState == WindowState.Minimized)
+            MessageBox.Show(
+                "Multi-Instance CRD needs the Microsoft Edge WebView2 Runtime, which is missing on this PC.\n\n" +
+                "Install it from https://go.microsoft.com/fwlink/p/?LinkId=2124703 and start the app again.",
+                "WebView2 Runtime required", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ExitApp();
+            return;
+        }
+        catch (Exception ex)
         {
-            if (_hudWindow.Visibility == Visibility.Visible)
-            {
-                _hudWindow.Hide();
-            }
+            CrashLog.Write("WebView2 environment failed to start", ex);
+            MessageBox.Show(
+                $"The browser engine could not start:\n\n{ex.Message}\n\nDetails: {CrashLog.FilePath}",
+                "Multi-Instance CRD", MessageBoxButton.OK, MessageBoxImage.Error);
+            ExitApp();
             return;
         }
 
-        if (_hudWindow.Visibility != Visibility.Visible)
-        {
-            _hudWindow.Show();
-        }
-
-        if (WindowState == WindowState.Maximized)
+        foreach (var slot in _slots)
         {
             try
             {
-                var pZero = PointToScreen(new Point(0, 0));
-                var transform = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformFromDevice;
-                if (transform.HasValue)
-                {
-                    var dipPoint = transform.Value.Transform(pZero);
-                    _hudWindow.Left = dipPoint.X;
-                    _hudWindow.Top = dipPoint.Y;
-                }
-                else
-                {
-                    _hudWindow.Left = Left;
-                    _hudWindow.Top = Top;
-                }
+                await InitializeSessionAsync(slot);
             }
-            catch
+            catch (Exception ex)
             {
-                _hudWindow.Left = Left;
-                _hudWindow.Top = Top;
+                CrashLog.Write($"Session {slot.Index} failed to start", ex);
+                slot.State = ConnState.Failed;
             }
-            _hudWindow.Width = ActualWidth > 0 ? ActualWidth : (Width > 0 ? Width : SystemParameters.PrimaryScreenWidth);
-            _hudWindow.Height = ActualHeight > 0 ? ActualHeight : (Height > 0 ? Height : SystemParameters.PrimaryScreenHeight);
+        }
+
+        // Older builds could leave a clipboard decision saved in the shared profile, which would bypass
+        // the per-session check in PermissionRequested. Reset it so every request is asked again.
+        try
+        {
+            if (_slots[0].Core is { } core)
+            {
+                foreach (var origin in new[] { "https://remotedesktop.google.com", "https://remotedesktop.corp.google.com" })
+                {
+                    await core.Profile.SetPermissionStateAsync(CoreWebView2PermissionKind.ClipboardRead, origin, CoreWebView2PermissionState.Default);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write("Could not reset saved clipboard permission", ex.Message);
+        }
+
+        ApplyLayout();
+        ApplySessionActivity();
+        RefreshPills();
+        CurrentSlot.View.Focus();
+        _thumbnailRefreshTimer.Start();
+
+        // Show the bar for a few seconds on launch so people know it exists, then let it auto-hide.
+        await Task.Delay(3000);
+        if (!_config.PinBar && _barVisible) _hideTimer.Start();
+    }
+
+    private async Task InitializeSessionAsync(Slot slot)
+    {
+        var view = slot.View;
+        view.DefaultBackgroundColor = System.Drawing.Color.Black;
+        await view.EnsureCoreWebView2Async(_webViewEnvironment);
+        var core = view.CoreWebView2;
+
+        core.Settings.IsStatusBarEnabled = false;
+        core.Settings.IsZoomControlEnabled = false;
+        // F5 / Ctrl+R / Ctrl+W etc. go to the remote computer instead of reloading the session.
+        core.Settings.AreBrowserAcceleratorKeysEnabled = false;
+
+        if (!string.IsNullOrEmpty(_mediatorScript))
+        {
+            await core.AddScriptToExecuteOnDocumentCreatedAsync(_mediatorScript);
+        }
+
+        view.GotFocus += (_, _) => MarkActive(slot.Index);
+
+        core.NavigationStarting += (_, _) =>
+        {
+            slot.State = ConnState.Idle;
+            slot.Stats = null;
+            RefreshPills();
+        };
+
+        core.NavigationCompleted += (_, _) =>
+        {
+            slot.UnresponsiveSince = null;
+            RunScript(core, $"window.__crdSetFitMode && window.__crdSetFitMode('{FitModes[_fitIndex].Css}');");
+            ApplySessionActivity(slot);
+        };
+
+        core.PermissionRequested += (_, args) =>
+        {
+            bool isCrd = Uri.TryCreate(args.Uri, UriKind.Absolute, out var uri) && AppConfig.IsCrdUri(uri);
+            // Clipboard sync only for the session you are working in; everything else is declined.
+            // Not saved to the (shared) profile, so the decision is made per request and per session.
+            args.SavesInProfile = false;
+            args.State = isCrd && args.PermissionKind == CoreWebView2PermissionKind.ClipboardRead && slot.Index == _current
+                ? CoreWebView2PermissionState.Allow
+                : CoreWebView2PermissionState.Deny;
+            args.Handled = true;
+        };
+
+        core.NewWindowRequested += (_, args) =>
+        {
+            // Links that would open a popup go to the default browser instead, but only when the user
+            // clicked something or the request comes from the CRD page itself, and at most once a second.
+            args.Handled = true;
+            bool fromCrd = Uri.TryCreate(core.Source, UriKind.Absolute, out var source) && AppConfig.IsCrdUri(source);
+            if (!(args.IsUserInitiated || fromCrd) || (DateTime.UtcNow - slot.LastExternalOpen).TotalSeconds < 1) return;
+            if (Uri.TryCreate(args.Uri, UriKind.Absolute, out var uri) &&
+                (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp))
+            {
+                slot.LastExternalOpen = DateTime.UtcNow;
+                OpenInDefaultBrowser(uri);
+            }
+        };
+
+        core.SourceChanged += (_, _) =>
+        {
+            if (!Uri.TryCreate(core.Source, UriKind.Absolute, out var uri) || !AppConfig.IsCrdUri(uri)) return;
+
+            if (uri.AbsolutePath.StartsWith("/access/session/", StringComparison.OrdinalIgnoreCase))
+            {
+                // Remember the last computer this slot connected to so it reconnects directly next time.
+                var session = _config.GetSession(slot.Index);
+                if (session.Url != core.Source)
+                {
+                    session.Url = core.Source;
+                    _config.Save();
+                }
+                UpdateHostName(slot, core);
+            }
+            else if (slot.State != ConnState.Idle)
+            {
+                // Back on the computer list (in-page navigation): the session is over even if no event said so.
+                slot.State = ConnState.Idle;
+                slot.Stats = null;
+                RefreshPills();
+            }
+        };
+
+        core.DocumentTitleChanged += (_, _) => UpdateHostName(slot, core);
+        core.WebMessageReceived += (_, args) => OnWebMessage(slot, args);
+        core.ProcessFailed += (_, args) => OnProcessFailed(slot, args);
+
+        core.Navigate(_config.GetSession(slot.Index).Url);
+    }
+
+    private bool _browserFailureHandled;
+
+    private async void OnProcessFailed(Slot slot, CoreWebView2ProcessFailedEventArgs args)
+    {
+        var kind = args.ProcessFailedKind;
+        CrashLog.Write($"Session {slot.Index} WebView process failed", kind);
+
+        if (kind == CoreWebView2ProcessFailedKind.BrowserProcessExited)
+        {
+            // Every session shares one browser process, so this is reported once per session: handle it once.
+            if (_browserFailureHandled) return;
+            _browserFailureHandled = true;
+            foreach (var s in _slots) s.State = ConnState.Failed;
+            RefreshPills();
+            MessageBox.Show(this,
+                "The browser engine stopped unexpectedly, so all sessions were disconnected.\n\nMulti-Instance CRD will close now. Please start it again.",
+                "Multi-Instance CRD", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ExitApp();
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+        if (kind == CoreWebView2ProcessFailedKind.RenderProcessUnresponsive)
+        {
+            // Often recovers on its own. Only reload if it is still hung well after the first report.
+            // A report long after the previous one is a new hang, not the same one continuing.
+            if (slot.UnresponsiveSince == null || (now - slot.UnresponsiveSince.Value).TotalSeconds > 45)
+            {
+                slot.UnresponsiveSince = now;
+                return;
+            }
+            if ((now - slot.UnresponsiveSince.Value).TotalSeconds < 12) return;
+        }
+        else if (kind != CoreWebView2ProcessFailedKind.RenderProcessExited)
+        {
+            return; // GPU / utility processes are restarted by WebView2 itself.
+        }
+
+        slot.UnresponsiveSince = null;
+        slot.RecentCrashes.RemoveAll(t => (now - t).TotalSeconds > 60);
+        slot.RecentCrashes.Add(now);
+        slot.State = ConnState.Failed;
+        RefreshPills();
+        if (slot.RecentCrashes.Count > 3) return; // keeps crashing: leave it in the failed state
+
+        await Task.Delay(1000 * slot.RecentCrashes.Count);
+        try { slot.Core?.Reload(); } catch { }
+    }
+
+    private static void OpenInDefaultBrowser(Uri uri)
+    {
+        // Started outside the app's kill-on-exit job, so quitting the app never closes the user's browser.
+        if (NativeMethods.TryStartOutsideJob($"\"{Environment.SystemDirectory}\\rundll32.exe\" url.dll,FileProtocolHandler {uri.AbsoluteUri}")) return;
+        try { Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true }); } catch { }
+    }
+
+    #endregion
+
+    #region Page messages
+
+    private void OnWebMessage(Slot slot, CoreWebView2WebMessageReceivedEventArgs args)
+    {
+        string? msg;
+        try { msg = args.TryGetWebMessageAsString(); }
+        catch { return; }
+        if (string.IsNullOrEmpty(msg)) return;
+        slot.UnresponsiveSince = null; // the page is talking, so its renderer is alive
+
+        if (msg == "FOCUSED")
+        {
+            MarkActive(slot.Index);
+        }
+        else if (msg.StartsWith("CONN_STATE:", StringComparison.Ordinal))
+        {
+            slot.State = msg["CONN_STATE:".Length..] switch
+            {
+                "connected" => ConnState.Connected,
+                "new" or "connecting" => ConnState.Connecting,
+                "failed" => ConnState.Failed,
+                _ => ConnState.Idle,
+            };
+            if (slot.State != ConnState.Connected) slot.Stats = null;
+            RefreshPills();
+        }
+        else if (msg.StartsWith("{\"type\":\"STATS\"", StringComparison.Ordinal))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(msg);
+                var root = doc.RootElement;
+                int rtt = root.GetProperty("rtt").GetInt32();
+                int fps = root.GetProperty("fps").GetInt32();
+                int w = root.GetProperty("width").GetInt32();
+                int h = root.GetProperty("height").GetInt32();
+                slot.Stats = w > 0 ? $"{rtt} ms · {fps} fps · {w}×{h}" : $"{rtt} ms · {fps} fps";
+                if (ThumbnailPopup.IsOpen && _hoveredSlot == slot.Index) UpdatePeekText(slot);
+            }
+            catch { }
+        }
+    }
+
+    /// <summary>Names the slot after the connected computer. Only titles of CRD session pages count.</summary>
+    private void UpdateHostName(Slot slot, CoreWebView2 core)
+    {
+        if (!Uri.TryCreate(core.Source, UriKind.Absolute, out var uri) || !AppConfig.IsCrdUri(uri) ||
+            !uri.AbsolutePath.StartsWith("/access/session/", StringComparison.OrdinalIgnoreCase)) return;
+
+        var title = core.DocumentTitle;
+        if (string.IsNullOrWhiteSpace(title)) return;
+        var cleaned = title.Replace("- Chrome Remote Desktop", "").Replace("Chrome Remote Desktop", "").Trim(' ', '-', '–');
+        if (AppConfig.IsGenericPageTitle(cleaned)) return;
+
+        var session = _config.GetSession(slot.Index);
+        if (session.Name == cleaned) return;
+        session.Name = cleaned;
+        _config.Save();
+        RefreshPills();
+    }
+
+    #endregion
+
+    #region Sessions, split view and background pausing
+
+    public void SwitchToSession(int target)
+    {
+        if (target < 1 || target > AppConfig.SessionCount) return;
+        ThumbnailPopup.IsOpen = false;
+
+        int previous = _current;
+        if (target == previous)
+        {
+            CurrentSlot.View.Focus();
+            return;
+        }
+
+        if (!IsShown(target)) _lastBackground = previous;
+
+        if (_split)
+        {
+            // A session that is already on screen just gets focus; otherwise it replaces the focused pane.
+            if (target != _splitLeft && target != _splitRight)
+            {
+                if (_current == _splitLeft) _splitLeft = target; else _splitRight = target;
+            }
+            _current = target;
+            ApplyLayout();
         }
         else
         {
-            _hudWindow.Left = Left;
-            _hudWindow.Top = Top;
-            _hudWindow.Width = ActualWidth > 0 ? ActualWidth : Width;
-            _hudWindow.Height = ActualHeight > 0 ? ActualHeight : Height;
+            // Swap in one step: WebView2 is a native child window, so WPF z-order can't stack two of them.
+            _current = target;
+            ApplyVisibility();
         }
+
+        CurrentSlot.View.Focus();
+        OnCurrentSessionChanged();
+    }
+
+    private void OnCurrentSessionChanged()
+    {
+        RefreshPills();
+        ApplySessionActivity();
+    }
+
+    /// <summary>In split view, clicking into a pane makes it the current session (sound, clipboard, Send keys).</summary>
+    private void MarkActive(int index)
+    {
+        if (!_split || index == _current || !IsShown(index)) return;
+        _current = index;
+        OnCurrentSessionChanged();
+    }
+
+    private void CycleNextSession() => SwitchToSession(_current % AppConfig.SessionCount + 1);
+
+    private bool IsShown(int index) => _split ? index == _splitLeft || index == _splitRight : index == _current;
+
+    private void ToggleSplit()
+    {
+        _split = !_split;
+        if (_split)
+        {
+            _splitLeft = _current;
+            _splitRight = _lastBackground != _current && _lastBackground is >= 1 and <= AppConfig.SessionCount
+                ? _lastBackground
+                : _current % AppConfig.SessionCount + 1;
+            ResetSplitRatio();
+        }
+        ApplyLayout();
+        RefreshPills();
+        ApplySessionActivity();
+        UpdateBarButtons();
+    }
+
+    private void ApplyLayout()
+    {
+        if (_split)
+        {
+            ColDivider.Width = GridLength.Auto;
+            if (ColRight.Width.Value == 0) ResetSplitRatio();
+            SplitDivider.Visibility = Visibility.Visible;
+            foreach (var slot in _slots)
+            {
+                Grid.SetColumn(slot.View, slot.Index == _splitRight ? 2 : 0);
+            }
+        }
+        else
+        {
+            ColLeft.Width = new GridLength(1, GridUnitType.Star);
+            ColDivider.Width = new GridLength(0);
+            ColRight.Width = new GridLength(0);
+            SplitDivider.Visibility = Visibility.Collapsed;
+            foreach (var slot in _slots) Grid.SetColumn(slot.View, 0);
+        }
+        ApplyVisibility();
+    }
+
+    private void ApplyVisibility()
+    {
+        foreach (var slot in _slots)
+        {
+            slot.View.Visibility = IsShown(slot.Index) ? Visibility.Visible : Visibility.Collapsed;
+        }
+    }
+
+    private void ResetSplitRatio()
+    {
+        ColLeft.Width = new GridLength(1, GridUnitType.Star);
+        ColRight.Width = new GridLength(1, GridUnitType.Star);
+    }
+
+    private void SplitDivider_MouseDoubleClick(object sender, MouseButtonEventArgs e) => ResetSplitRatio();
+
+    /// <summary>Sound only from the focused session; video paused for sessions that are off screen (if enabled).</summary>
+    private void ApplySessionActivity()
+    {
+        foreach (var slot in _slots) ApplySessionActivity(slot);
+    }
+
+    private void ApplySessionActivity(Slot slot)
+    {
+        var core = slot.Core;
+        if (core == null) return;
+        try
+        {
+            core.IsMuted = slot.Index != _current;
+            bool keepRunning = (IsVisible && IsShown(slot.Index)) || !_config.PauseBackgroundSessions;
+            core.MemoryUsageTargetLevel = keepRunning ? CoreWebView2MemoryUsageTargetLevel.Normal : CoreWebView2MemoryUsageTargetLevel.Low;
+            RunScript(core, keepRunning
+                ? "window.__crdResumeSession && window.__crdResumeSession();"
+                : "window.__crdPauseSession && window.__crdPauseSession();");
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write($"Session {slot.Index} activity update failed", ex.Message);
+        }
+    }
+
+    private static async void RunScript(CoreWebView2? core, string script)
+    {
+        if (core == null) return;
+        try { await core.ExecuteScriptAsync(script); }
+        catch (Exception ex) { Debug.WriteLine($"Script failed: {ex.Message}"); }
+    }
+
+    private void CaptureShownSessions()
+    {
+        if (!IsVisible || WindowState == WindowState.Minimized) return;
+        foreach (var slot in _slots.Where(s => IsShown(s.Index))) _ = CaptureThumbnailAsync(slot);
+    }
+
+    private static async Task CaptureThumbnailAsync(Slot slot)
+    {
+        var core = slot.Core;
+        if (core == null || slot.State != ConnState.Connected) return;
+        try
+        {
+            using var stream = new MemoryStream();
+            await core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Jpeg, stream);
+            stream.Position = 0;
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.DecodePixelWidth = 512;
+            bitmap.StreamSource = stream;
+            bitmap.EndInit();
+            bitmap.Freeze();
+            slot.Thumbnail = bitmap;
+        }
+        catch { }
+    }
+
+    private void CycleFitMode()
+    {
+        _fitIndex = (_fitIndex + 1) % FitModes.Length;
+        _config.FitMode = FitModes[_fitIndex].Css;
+        _config.Save();
+        foreach (var slot in _slots)
+        {
+            RunScript(slot.Core, $"window.__crdSetFitMode && window.__crdSetFitMode('{FitModes[_fitIndex].Css}');");
+        }
+        UpdateBarButtons();
     }
 
     #endregion
 
-    #region Scoped Win32 Low-Level Keyboard Hook (Prevents CRD from Hijacking Shortcuts)
+    #region Top bar
 
-    private void InstallLowLevelKeyboardHook()
+    private void CreateBarWindow()
     {
-        if (_hKeyboardHook != IntPtr.Zero) return;
-        _keyboardHookDelegate = LowLevelKeyboardCallback;
-        IntPtr hMod = GetModuleHandle(null);
-        _hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, _keyboardHookDelegate, hMod, 0);
+        RootGrid.Children.Remove(BarRoot);
+        _barWindow = new Window
+        {
+            Title = "Multi-Instance CRD bar",
+            WindowStyle = WindowStyle.None,
+            AllowsTransparency = true,
+            Background = Brushes.Transparent, // transparent pixels pass clicks through to the session
+            ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false,
+            ShowActivated = false,
+            SizeToContent = SizeToContent.WidthAndHeight,
+            Owner = this,
+            Content = BarRoot,
+        };
+        _barWindow.SourceInitialized += (_, _) => MakeNonActivating(new WindowInteropHelper(_barWindow).Handle);
+        _barWindow.SizeChanged += (_, _) => PositionBar();
+        _barVisible = false;
+        ShowBar();
     }
 
-    private void UninstallLowLevelKeyboardHook()
+    private void PositionBar()
     {
-        if (_hKeyboardHook != IntPtr.Zero)
+        if (_barWindow == null || !_barWindow.IsVisible || !IsVisible) return;
+        var bar = new WindowInteropHelper(_barWindow).Handle;
+        if (bar == IntPtr.Zero || !GetClientRect(Handle, out var client) || !GetWindowRect(bar, out var barRect)) return;
+
+        var origin = new POINT();
+        ClientToScreen(Handle, ref origin);
+        int barWidth = barRect.Right - barRect.Left;
+        int x = origin.X + (client.Right - client.Left - barWidth) / 2;
+        SetWindowPos(bar, IntPtr.Zero, x, origin.Y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    private void ShowBar()
+    {
+        _revealTimer.Stop();
+        _revealDwellStart = null;
+        if (_barWindow == null || _barVisible || !IsVisible || WindowState == WindowState.Minimized) return;
+
+        _barVisible = true;
+        _barWindow.Show();
+        PositionBar();
+
+        // Refresh previews of what's on screen now: the next hover over a tab will want them.
+        CaptureShownSessions();
+        var from = -Math.Max(Bar.ActualHeight, 40);
+        BarTransform.BeginAnimation(TranslateTransform.YProperty,
+            new DoubleAnimation(from, 0, TimeSpan.FromMilliseconds(140)) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
+    }
+
+    private void HideBar(bool animate = true)
+    {
+        _hideTimer.Stop();
+        if (_barWindow == null || !_barVisible) return;
+
+        _barVisible = false;
+        KeysPopup.IsOpen = false;
+        ThumbnailPopup.IsOpen = false;
+
+        if (!animate)
         {
-            UnhookWindowsHookEx(_hKeyboardHook);
-            _hKeyboardHook = IntPtr.Zero;
+            BarTransform.BeginAnimation(TranslateTransform.YProperty, null);
+            _barWindow.Hide();
+        }
+        else
+        {
+            var anim = new DoubleAnimation(-(Bar.ActualHeight + 4), TimeSpan.FromMilliseconds(160))
+            {
+                EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn },
+            };
+            anim.Completed += (_, _) => { if (!_barVisible) _barWindow.Hide(); };
+            BarTransform.BeginAnimation(TranslateTransform.YProperty, anim);
+        }
+
+        if (IsVisible) _revealTimer.Start();
+    }
+
+    private void ToggleBar()
+    {
+        if (_barVisible)
+        {
+            if (_config.PinBar) SetPinned(false);
+            HideBar();
+        }
+        else
+        {
+            ShowBar();
         }
     }
 
-    private bool IsOurWindowOrWebViewActive()
+    private void SetPinned(bool pinned)
     {
-        IntPtr fg = GetForegroundWindow();
+        _config.PinBar = pinned;
+        _config.Save();
+        UpdateBarButtons();
+        if (pinned) ShowBar();
+        else if (!IsCursorOverBar()) _hideTimer.Start();
+    }
+
+    /// <summary>Polls the cursor while the bar is hidden: resting at the top edge of the window reveals it.</summary>
+    private void RevealTimer_Tick(object? sender, EventArgs e)
+    {
+        if (_barVisible || !IsVisible || WindowState == WindowState.Minimized || !IsOurWindowActive() || !IsCursorInRevealZone())
+        {
+            _revealDwellStart = null;
+            return;
+        }
+
+        if (_revealDwellStart == null)
+        {
+            _revealDwellStart = DateTime.UtcNow;
+        }
+        else if ((DateTime.UtcNow - _revealDwellStart.Value).TotalMilliseconds >= _config.BarRevealDelayMs)
+        {
+            ShowBar();
+            if (!_config.PinBar) _hideTimer.Start();
+        }
+    }
+
+    /// <summary>
+    /// Keeps polling until the bar can hide: no MouseLeave is guaranteed after the pointer
+    /// leaves a popup or the bar window's transparent margin.
+    /// </summary>
+    private void HideTimer_Tick(object? sender, EventArgs e)
+    {
+        if (_config.PinBar || !_barVisible)
+        {
+            _hideTimer.Stop();
+            return;
+        }
+        if (KeysPopup.IsOpen || IsCursorOverBar() || ThumbnailPopup.IsMouseOver || IsCursorInRevealZone()) return;
+        HideBar();
+    }
+
+    /// <summary>The thin strip along the top edge of the window, as wide as the bar (plus some slack).</summary>
+    private bool IsCursorInRevealZone()
+    {
+        if (!GetCursorPos(out var cursor) || !GetClientRect(Handle, out var client)) return false;
+
+        var origin = new POINT();
+        ClientToScreen(Handle, ref origin);
+        int width = client.Right - client.Left;
+        int center = origin.X + width / 2;
+        int half = 220;
+        if (_barWindow != null && GetWindowRect(new WindowInteropHelper(_barWindow).Handle, out var bar) && bar.Right > bar.Left)
+        {
+            half = Math.Max(half, (bar.Right - bar.Left) / 2);
+        }
+
+        return cursor.Y >= origin.Y - 1 && cursor.Y <= origin.Y + 2 &&
+               cursor.X >= center - half && cursor.X <= center + half;
+    }
+
+    /// <summary>True when the pointer is over the visible bar itself (not its transparent shadow margin).</summary>
+    private bool IsCursorOverBar()
+    {
+        if (!_barVisible || !GetCursorPos(out var p) || PresentationSource.FromVisual(Bar) == null) return false;
+        var topLeft = Bar.PointToScreen(new Point(0, 0));
+        var bottomRight = Bar.PointToScreen(new Point(Bar.ActualWidth, Bar.ActualHeight));
+        return p.X >= topLeft.X && p.X < bottomRight.X && p.Y >= topLeft.Y - 2 && p.Y < bottomRight.Y;
+    }
+
+    private void Bar_MouseEnter(object sender, MouseEventArgs e) => _hideTimer.Stop();
+
+    private void Bar_MouseLeave(object sender, MouseEventArgs e)
+    {
+        if (!_config.PinBar) _hideTimer.Start();
+    }
+
+    private void KeysPopup_Closed(object? sender, EventArgs e)
+    {
+        if (!_config.PinBar && _barVisible) _hideTimer.Start();
+    }
+
+    private void BuildSessionPills()
+    {
+        foreach (var slot in _slots)
+        {
+            slot.Dot = new Ellipse { Width = 8, Height = 8, Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
+            slot.Label = new TextBlock { MaxWidth = 150, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+            var content = new StackPanel { Orientation = Orientation.Horizontal };
+            content.Children.Add(slot.Dot);
+            content.Children.Add(slot.Label);
+
+            var pill = new Button
+            {
+                Style = (Style)FindResource("SessionPillStyle"),
+                Content = content,
+                Margin = new Thickness(1, 0, 1, 0),
+            };
+            int index = slot.Index;
+            pill.Click += (_, _) => SwitchToSession(index);
+            pill.MouseEnter += (_, _) => ShowPeek(index);
+            pill.MouseLeave += (_, _) => _thumbnailCloseTimer.Start();
+            slot.Pill = pill;
+            SessionPills.Children.Add(pill);
+        }
+    }
+
+    private void RefreshPills()
+    {
+        foreach (var slot in _slots)
+        {
+            bool focused = slot.Index == _current;
+            bool onScreen = IsShown(slot.Index);
+            slot.Label.Text = _config.GetSession(slot.Index).DisplayName;
+            slot.Pill.Background = focused ? (Brush)FindResource("SelectedBrush")
+                : onScreen ? (Brush)FindResource("PressedBrush")
+                : Brushes.Transparent;
+            slot.Pill.Foreground = (Brush)FindResource(onScreen ? "TextPrimaryBrush" : "TextSecondaryBrush");
+            slot.Label.FontWeight = focused ? FontWeights.SemiBold : FontWeights.Normal;
+            slot.Dot.Fill = (Brush)FindResource(slot.State switch
+            {
+                ConnState.Connected => "StatusConnectedBrush",
+                ConnState.Connecting => "StatusConnectingBrush",
+                ConnState.Failed => "StatusFailedBrush",
+                _ => "StatusIdleBrush",
+            });
+        }
+        if (ThumbnailPopup.IsOpen && _hoveredSlot > 0) UpdatePeekText(SlotAt(_hoveredSlot));
+        _trayIcon.UpdateTooltip($"Multi-Instance CRD — {_config.GetSession(_current).DisplayName}");
+    }
+
+    private void UpdateBarButtons()
+    {
+        var fit = FitModes[_fitIndex];
+        BtnFitMode.Content = fit.Glyph;
+        BtnFitMode.ToolTip = $"{fit.Label} — click to change  ({Shortcuts.KeysFor(ShortcutAction.CycleFitMode)})";
+        BtnSplit.Foreground = (Brush)FindResource(_split ? "AccentBrush" : "TextPrimaryBrush");
+        BtnSplit.ToolTip = $"{(_split ? "Turn off split view" : "Split view: two sessions side by side")}  ({Shortcuts.KeysFor(ShortcutAction.ToggleSplit)})";
+        BtnFullscreen.Content = _isFullscreen ? "" : "";
+        BtnFullscreen.ToolTip = $"{(_isFullscreen ? "Exit fullscreen" : "Fullscreen")}  ({Shortcuts.KeysFor(ShortcutAction.ToggleFullscreen)})";
+        BtnPin.Content = _config.PinBar ? "" : "";
+        BtnPin.ToolTip = _config.PinBar ? "Unpin: auto-hide this bar" : $"Pin this bar open  (reveal it any time by resting the pointer at the top edge, or {Shortcuts.KeysFor(ShortcutAction.ToggleBar)})";
+        BtnHide.ToolTip = $"Hide to the system tray  ({Shortcuts.GlobalShowHideKeys} brings it back)";
+    }
+
+    private void ShowPeek(int index)
+    {
+        _thumbnailCloseTimer.Stop();
+        _hideTimer.Stop();
+        _hoveredSlot = index;
+        var slot = SlotAt(index);
+        bool showImage = !IsShown(index) && slot.Thumbnail != null;
+        ImgThumbnail.Source = showImage ? slot.Thumbnail : null;
+        ((FrameworkElement)ImgThumbnail.Parent).Visibility = showImage ? Visibility.Visible : Visibility.Collapsed;
+        UpdatePeekText(slot);
+        ThumbnailPopup.PlacementTarget = slot.Pill;
+        ThumbnailPopup.IsOpen = true;
+    }
+
+    private void UpdatePeekText(Slot slot)
+    {
+        string status = slot.State switch
+        {
+            ConnState.Connected => "Connected",
+            ConnState.Connecting => "Connecting…",
+            ConnState.Failed => "Connection failed",
+            _ => "Not connected",
+        };
+        var lines = new List<string> { $"{_config.GetSession(slot.Index).DisplayName} · {status}" };
+        if (slot.Stats != null && slot.State == ConnState.Connected) lines.Add(slot.Stats);
+        lines.Add(slot.Index == _current ? "Current session" : $"Click to switch  ({Shortcuts.KeysFor((ShortcutAction)(slot.Index - 1))})");
+        TxtThumbnail.Text = string.Join("\n", lines);
+    }
+
+    private void ThumbnailPopup_MouseEnter(object sender, MouseEventArgs e) => _thumbnailCloseTimer.Stop();
+
+    private void ThumbnailPopup_MouseLeave(object sender, MouseEventArgs e)
+    {
+        _thumbnailCloseTimer.Start();
+        if (!_config.PinBar && _barVisible) _hideTimer.Start();
+    }
+
+    private void ThumbnailPopup_Click(object sender, MouseButtonEventArgs e)
+    {
+        ThumbnailPopup.IsOpen = false;
+        if (_hoveredSlot > 0) SwitchToSession(_hoveredSlot);
+        if (!_config.PinBar && _barVisible) _hideTimer.Start();
+        e.Handled = true;
+    }
+
+    private void BtnSplit_Click(object sender, RoutedEventArgs e) => ToggleSplit();
+    private void BtnFitMode_Click(object sender, RoutedEventArgs e) => CycleFitMode();
+    private void BtnKeys_Click(object sender, RoutedEventArgs e) => KeysPopup.IsOpen = !KeysPopup.IsOpen;
+    private void BtnFullscreen_Click(object sender, RoutedEventArgs e) => ToggleFullscreen();
+    private void BtnPin_Click(object sender, RoutedEventArgs e) => SetPinned(!_config.PinBar);
+    private void BtnHide_Click(object sender, RoutedEventArgs e) => HideToTray();
+    private void BtnSettings_Click(object sender, RoutedEventArgs e) => OpenSettings();
+
+    #endregion
+
+    #region Send keys to the remote computer
+
+    private async void BtnSendCtrlAltDel_Click(object sender, RoutedEventArgs e) => await SendKeyChordAsync(KeyCtrl, KeyAlt, KeyDelete);
+    private async void BtnSendTaskManager_Click(object sender, RoutedEventArgs e) => await SendKeyChordAsync(KeyCtrl, KeyShift, KeyEscape);
+    private async void BtnSendWin_Click(object sender, RoutedEventArgs e) => await SendKeyChordAsync(KeyMeta);
+    private async void BtnSendWinD_Click(object sender, RoutedEventArgs e) => await SendKeyChordAsync(KeyMeta, KeyD);
+
+    /// <summary>
+    /// Presses the keys in order and releases them in reverse as real key events in the page,
+    /// so Chrome Remote Desktop forwards them to the remote computer exactly once.
+    /// </summary>
+    private async Task SendKeyChordAsync(params KeyDef[] keys)
+    {
+        KeysPopup.IsOpen = false;
+        var core = CurrentSlot.Core;
+        if (core == null) return;
+        CurrentSlot.View.Focus();
+
+        int modifiers = 0;
+        int pressed = 0;
+        try
+        {
+            foreach (var key in keys)
+            {
+                modifiers |= key.ModifierBit;
+                await DispatchKeyAsync(core, "rawKeyDown", key, modifiers);
+                pressed++;
+            }
+            await Task.Delay(60);
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write("Sending keys failed", ex.Message);
+        }
+        finally
+        {
+            for (int i = pressed - 1; i >= 0; i--)
+            {
+                modifiers &= ~keys[i].ModifierBit;
+                try { await DispatchKeyAsync(core, "keyUp", keys[i], modifiers); } catch { }
+            }
+        }
+    }
+
+    private static Task DispatchKeyAsync(CoreWebView2 core, string type, KeyDef key, int modifiers)
+    {
+        var json = JsonSerializer.Serialize(new
+        {
+            type,
+            key = key.Key,
+            code = key.Code,
+            windowsVirtualKeyCode = key.VirtualKey,
+            nativeVirtualKeyCode = key.VirtualKey,
+            location = key.Location,
+            modifiers,
+        });
+        return core.CallDevToolsProtocolMethodAsync("Input.dispatchKeyEvent", json);
+    }
+
+    #endregion
+
+    #region Keyboard shortcuts
+
+    private void InstallKeyboardHook()
+    {
+        if (_keyboardHook != IntPtr.Zero) return;
+        _keyboardHookProc = KeyboardHookCallback;
+        _keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, _keyboardHookProc, GetModuleHandle(null), 0);
+        if (_keyboardHook == IntPtr.Zero) CrashLog.Write("Keyboard hook failed", Marshal.GetLastWin32Error());
+    }
+
+    private void UninstallKeyboardHook()
+    {
+        if (_keyboardHook == IntPtr.Zero) return;
+        UnhookWindowsHookEx(_keyboardHook);
+        _keyboardHook = IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// Ctrl+Alt shortcuts are caught before the remote session sees them, but only while this app is in front.
+    /// AltGr (reported by Windows as Left Ctrl + Right Alt) is ignored so it still types characters.
+    /// </summary>
+    private IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        if (nCode >= 0 && (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN) && IsOurWindowActive())
+        {
+            var kb = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
+            bool ctrl = IsKeyDown(VK_LCONTROL) || IsKeyDown(VK_RCONTROL);
+            bool alt = IsKeyDown(VK_LMENU) || (IsKeyDown(VK_RMENU) && IsKeyDown(VK_RCONTROL) && !IsKeyDown(VK_LCONTROL));
+            bool other = IsKeyDown(VK_SHIFT) || IsKeyDown(VK_LWIN) || IsKeyDown(VK_RWIN);
+
+            if (ctrl && alt && !other && Shortcuts.Find(kb.vkCode) is { } shortcut)
+            {
+                Dispatcher.BeginInvoke(() => RunShortcut(shortcut.Action));
+                return (IntPtr)1;
+            }
+        }
+        return CallNextHookEx(_keyboardHook, nCode, wParam, lParam);
+    }
+
+    private void RunShortcut(ShortcutAction action)
+    {
+        if (_settingsDialog != null) return; // modal Settings is open
+        switch (action)
+        {
+            case ShortcutAction.Session1: SwitchToSession(1); break;
+            case ShortcutAction.Session2: SwitchToSession(2); break;
+            case ShortcutAction.Session3: SwitchToSession(3); break;
+            case ShortcutAction.NextSession: CycleNextSession(); break;
+            case ShortcutAction.ToggleSplit: ToggleSplit(); break;
+            case ShortcutAction.CycleFitMode: CycleFitMode(); break;
+            case ShortcutAction.ToggleFullscreen: ToggleFullscreen(); break;
+            case ShortcutAction.ToggleBar: ToggleBar(); break;
+        }
+    }
+
+    private bool IsOurWindowActive()
+    {
+        var fg = GetForegroundWindow();
         if (fg == IntPtr.Zero) return false;
-
-        var myHandle = new WindowInteropHelper(this).Handle;
-        var hudHandle = _hudWindow != null ? new WindowInteropHelper(_hudWindow).Handle : IntPtr.Zero;
-
-        if (fg == myHandle || fg == hudHandle) return true;
-
-        IntPtr root = GetAncestor(fg, GA_ROOT);
-        IntPtr rootOwner = GetAncestor(fg, GA_ROOTOWNER);
-        return root == myHandle || root == hudHandle || rootOwner == myHandle || rootOwner == hudHandle;
+        var main = Handle;
+        var root = GetAncestor(fg, GA_ROOT);
+        var owner = GetAncestor(fg, GA_ROOTOWNER);
+        return fg == main || root == main || owner == main;
     }
 
-    private IntPtr LowLevelKeyboardCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    private void UpdateGlobalHotkey()
     {
-        if (nCode >= 0 && (wParam == (IntPtr)WM_KEYDOWN || wParam == (IntPtr)WM_SYSKEYDOWN))
+        var hwnd = Handle;
+        if (_config.GlobalHotkeyEnabled && !_globalHotkeyRegistered)
         {
-            if (IsOurWindowOrWebViewActive())
+            _globalHotkeyRegistered = RegisterHotKey(hwnd, HotkeyShowHideId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_R);
+            if (!_globalHotkeyRegistered)
             {
-                var kb = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
-                bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-                bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-
-                if (ctrlDown && altDown)
-                {
-                    switch (kb.vkCode)
-                    {
-                        case 0x31: // '1'
-                        case 0x61: // NumPad 1
-                            Dispatcher.BeginInvoke(() => SwitchToSession(1));
-                            return (IntPtr)1;
-                        case 0x32: // '2'
-                        case 0x62: // NumPad 2
-                            Dispatcher.BeginInvoke(() => SwitchToSession(2));
-                            return (IntPtr)1;
-                        case 0x33: // '3'
-                        case 0x63: // NumPad 3
-                            Dispatcher.BeginInvoke(() => SwitchToSession(3));
-                            return (IntPtr)1;
-                        case 0x09: // Tab
-                            Dispatcher.BeginInvoke(CycleNextSession);
-                            return (IntPtr)1;
-                        case 0x53: // 'S' -> Toggle Notch
-                            Dispatcher.BeginInvoke(ToggleNotch);
-                            return (IntPtr)1;
-                        case 0x44: // 'D' -> Cycle Display Mode (Fit / Stretch 16:10 / Zoom)
-                            Dispatcher.BeginInvoke(CycleDisplayMode);
-                            return (IntPtr)1;
-                        case 0x43: // 'C' -> Toggle Cockpit 50/50 Split
-                            Dispatcher.BeginInvoke(ToggleCockpitMode);
-                            return (IntPtr)1;
-                        case 0x4D: // 'M' -> Toggle Relative Mouse
-                            Dispatcher.BeginInvoke(ToggleRelativeMouseMode);
-                            return (IntPtr)1;
-                        case 0x4E: // 'N' -> Sync Native 16:10 Resolution
-                            Dispatcher.BeginInvoke(async () => await SyncSessionHostResolutionAsync(_currentSessionIndex));
-                            return (IntPtr)1;
-                        case 0x4F: // 'O' -> Cycle Remote Host Monitor (1 / 2 / All)
-                            Dispatcher.BeginInvoke(CycleRemoteMonitor);
-                            return (IntPtr)1;
-                        case 0x24: // Home -> Release Cursor
-                            Dispatcher.BeginInvoke(ReleaseCursor);
-                            return (IntPtr)1;
-                    }
-                }
-                else if (kb.vkCode == 0x7A) // F11 -> Toggle Fullscreen
-                {
-                    Dispatcher.BeginInvoke(() => BtnFullscreen_Click(this, new RoutedEventArgs()));
-                    return (IntPtr)1;
-                }
+                CrashLog.Write("Ctrl+Alt+R is already used by another app", Marshal.GetLastWin32Error());
+                _trayIcon.ShowNotification("Shortcut unavailable",
+                    $"{Shortcuts.GlobalShowHideKeys} is already used by another app. Use the tray icon to show Multi-Instance CRD.");
             }
         }
-        return CallNextHookEx(_hKeyboardHook, nCode, wParam, lParam);
+        else if (!_config.GlobalHotkeyEnabled && _globalHotkeyRegistered)
+        {
+            UnregisterHotKey(hwnd, HotkeyShowHideId);
+            _globalHotkeyRegistered = false;
+        }
     }
 
-    #endregion
-
-    private IntPtr HwndMessageHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg == WM_HOTKEY)
+        if (msg == WM_HOTKEY && wParam.ToInt32() == HotkeyShowHideId)
         {
-            int id = wParam.ToInt32();
-            if (id == HOTKEY_SUMMON_ID || id == HOTKEY_SUMMON_FALLBACK_ID)
-            {
-                ToggleWindowVisibility();
-                handled = true;
-            }
+            ToggleWindowVisibility();
+            handled = true;
         }
         else
         {
@@ -479,1375 +1095,214 @@ public partial class MainWindow : Window
         return IntPtr.Zero;
     }
 
-    private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+    #endregion
+
+    #region Window, fullscreen and tray
+
+    private void ApplyWindowMode(bool fullscreen)
     {
-        if (!_isExplicitExit && _config.MinimizeToTrayOnClose)
+        _isFullscreen = fullscreen;
+        if (fullscreen)
         {
-            e.Cancel = true;
-            HideToTray();
-            _trayIcon.ShowNotification("CRD Standby", "Minimized to System Tray (0% Adreno GPU, EcoQoS Active). Press Ctrl+Alt+R to summon.");
+            // Leaving Maximized first makes WPF re-maximize over the taskbar with the borderless style.
+            if (WindowState == WindowState.Maximized) WindowState = WindowState.Normal;
+            WindowStyle = WindowStyle.None;
+            ResizeMode = ResizeMode.NoResize;
+            WindowState = WindowState.Maximized;
         }
         else
         {
-            UninstallLowLevelKeyboardHook();
-            _hudWindow?.Close();
-            _trayIcon.Dispose();
+            WindowStyle = WindowStyle.SingleBorderWindow;
+            ResizeMode = ResizeMode.CanResize;
+            WindowState = WindowState.Normal;
+        }
+    }
+
+    private void ToggleFullscreen()
+    {
+        ApplyWindowMode(!_isFullscreen);
+        UpdateBarButtons();
+        PositionBar();
+    }
+
+    private void MainWindow_StateChanged(object? sender, EventArgs e)
+    {
+        if (WindowState != WindowState.Minimized)
+        {
+            _lastWindowState = WindowState;
+            if (_config.PinBar) ShowBar(); else if (!_barVisible) _revealTimer.Start();
+            PositionBar();
+        }
+        else
+        {
+            HideBar(animate: false);
+            _revealTimer.Stop();
+        }
+    }
+
+    public void ToggleWindowVisibility()
+    {
+        if (_settingsDialog != null)
+        {
+            _settingsDialog.Activate();
+            return;
+        }
+        if (IsVisible && WindowState != WindowState.Minimized && IsOurWindowActive()) HideToTray();
+        else RestoreFromTray();
+    }
+
+    public void HideToTray()
+    {
+        HideBar(animate: false);
+        _revealTimer.Stop();
+        UninstallKeyboardHook();
+
+        Hide();
+        ApplySessionActivity(); // IsVisible is now false: every session pauses (if enabled)
+
+        if (!_trayHintShown && _config.MinimizeToTrayOnClose)
+        {
+            _trayHintShown = true;
+            _trayIcon.ShowNotification("Still running in the tray",
+                _globalHotkeyRegistered ? $"Press {Shortcuts.GlobalShowHideKeys} or click the tray icon to bring it back." : "Click the tray icon to bring it back.");
+        }
+    }
+
+    /// <summary>Called when the app is launched again while already running.</summary>
+    public void ShowFromOtherInstance()
+    {
+        if (_settingsDialog != null)
+        {
+            _settingsDialog.Activate();
+            return;
+        }
+        RestoreFromTray();
+    }
+
+    public void RestoreFromTray()
+    {
+        Show();
+        if (WindowState == WindowState.Minimized) WindowState = _lastWindowState;
+        Activate();
+        SetForegroundWindow(Handle);
+
+        InstallKeyboardHook();
+        ApplySessionActivity();
+        if (_config.PinBar) ShowBar(); else _revealTimer.Start();
+        PositionBar();
+        CurrentSlot.View.Focus();
+    }
+
+    private void ShowTrayMenu()
+    {
+        var menu = new ContextMenu { Placement = PlacementMode.MousePoint };
+
+        var show = new MenuItem { Header = "Show", FontWeight = FontWeights.SemiBold };
+        show.Click += (_, _) => RestoreFromTray();
+        menu.Items.Add(show);
+        menu.Items.Add(new Separator());
+
+        foreach (var slot in _slots)
+        {
+            int index = slot.Index;
+            var item = new MenuItem
+            {
+                Header = $"{index}. {_config.GetSession(index).DisplayName}",
+                IsCheckable = false,
+                IsChecked = index == _current,
+            };
+            item.Click += (_, _) => { RestoreFromTray(); SwitchToSession(index); };
+            menu.Items.Add(item);
+        }
+
+        menu.Items.Add(new Separator());
+        var settings = new MenuItem { Header = "Settings…" };
+        settings.Click += (_, _) => { RestoreFromTray(); OpenSettings(); };
+        menu.Items.Add(settings);
+
+        var exit = new MenuItem { Header = "Exit" };
+        exit.Click += (_, _) =>
+        {
+            _settingsDialog?.Close();
+            ExitApp();
+        };
+        menu.Items.Add(exit);
+
+        // While Settings is open, everything except Exit just brings the dialog back to the front.
+        if (_settingsDialog != null)
+        {
+            foreach (var item in menu.Items.OfType<MenuItem>().Where(i => i != exit)) item.IsEnabled = false;
+        }
+
+        SetForegroundWindow(Handle);
+        menu.IsOpen = true;
+    }
+
+    private void OpenSettings()
+    {
+        if (_settingsDialog != null)
+        {
+            _settingsDialog.Activate();
+            return;
+        }
+
+        KeysPopup.IsOpen = false;
+        var oldUrls = _config.Sessions.ToDictionary(s => s.Index, s => s.Url);
+        bool saved;
+        try
+        {
+            _settingsDialog = new SettingsWindow(_config) { Owner = this };
+            saved = _settingsDialog.ShowDialog() == true;
+        }
+        finally
+        {
+            _settingsDialog = null;
+        }
+        if (!saved) return;
+
+        _config.Save();
+        foreach (var slot in _slots)
+        {
+            var url = _config.GetSession(slot.Index).Url;
+            // Only reload a slot whose start page was edited; a reconnect while the dialog was open
+            // also changes the URL, but the page is already showing it.
+            if (url != oldUrls[slot.Index] && slot.Core != null && !string.Equals(url, slot.Core.Source, StringComparison.Ordinal))
+            {
+                slot.Core.Navigate(url);
+            }
+        }
+        UpdateGlobalHotkey();
+        UpdateBarButtons();
+        RefreshPills();
+        ApplySessionActivity();
+        if (_config.PinBar) ShowBar(); else if (_barVisible) _hideTimer.Start();
+        CurrentSlot.View.Focus();
+    }
+
+    private void ExitApp()
+    {
+        _exiting = true;
+        Close();
+    }
+
+    private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        if (!_exiting && _config.MinimizeToTrayOnClose)
+        {
+            e.Cancel = true;
+            HideToTray();
         }
     }
 
     private void MainWindow_Closed(object? sender, EventArgs e)
     {
-        ReleaseCursor();
-        UninstallLowLevelKeyboardHook();
-        _activeThumbnailTimer?.Stop();
-        _thumbnailCloseTimer?.Stop();
-        _dwellTimer?.Stop();
-        _collapseDebounceTimer?.Stop();
-        _rawMouseEngine.Dispose();
-        _oryonGovernor.Dispose();
-
-        var handle = new WindowInteropHelper(this).Handle;
-        if (handle != IntPtr.Zero)
-        {
-            UnregisterHotKey(handle, HOTKEY_SUMMON_ID);
-            UnregisterHotKey(handle, HOTKEY_SUMMON_FALLBACK_ID);
-        }
+        _revealTimer.Stop();
+        _hideTimer.Stop();
+        _thumbnailCloseTimer.Stop();
+        _thumbnailRefreshTimer.Stop();
+        UninstallKeyboardHook();
+        if (_globalHotkeyRegistered) UnregisterHotKey(Handle, HotkeyShowHideId);
         _trayIcon.Dispose();
-        _powerGovernor.Dispose();
-    }
-
-    protected override void OnDeactivated(EventArgs e)
-    {
-        base.OnDeactivated(e);
-        if (_isRelativeMouseActive && !IsOurWindowOrWebViewActive())
-        {
-            ReleaseCursor();
-        }
-    }
-
-    private void PowerGovernor_PowerSourceChanged(PowerSource source)
-    {
-        Dispatcher.Invoke(() =>
-        {
-            if (source == PowerSource.Battery)
-            {
-                for (int i = 1; i <= 3; i++)
-                {
-                    if (i != _currentSessionIndex)
-                    {
-                        var wv = GetWebViewByIndex(i);
-                        if (wv?.CoreWebView2 != null)
-                        {
-                            wv.CoreWebView2.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
-                            _oryonGovernor.ApplySessionProcessQoS(wv.CoreWebView2.BrowserProcessId, isEcoStandby: true);
-                        }
-                    }
-                }
-            }
-            else
-            {
-                for (int i = 1; i <= 3; i++)
-                {
-                    var wv = GetWebViewByIndex(i);
-                    if (wv?.CoreWebView2 != null)
-                    {
-                        bool isActive = (i == _currentSessionIndex) || (_isCockpitMode && i == _cockpitSecondaryIndex);
-                        wv.CoreWebView2.MemoryUsageTargetLevel = isActive
-                            ? CoreWebView2MemoryUsageTargetLevel.Normal
-                            : CoreWebView2MemoryUsageTargetLevel.Low;
-                        _oryonGovernor.ApplySessionProcessQoS(wv.CoreWebView2.BrowserProcessId, isEcoStandby: !isActive);
-                    }
-                }
-            }
-        });
-    }
-
-    private async Task InitializeWebViewEnvironmentAsync()
-    {
-        var userDataFolder = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "CRDLightweightARM",
-            "User Data"
-        );
-
-        var browserArgs = string.Join(" ", new[]
-        {
-            "--disable-background-timer-throttling",
-            "--disable-backgrounding-occluded-windows",
-            "--disable-renderer-backgrounding",
-            "--disable-features=IntensiveWakeUpThrottling,CalculateNativeWinOcclusion,FreezingOnBatterySaver,TabDiscarding",
-            "--disable-user-gesture-requirement-for-presentation",
-            "--autoplay-policy=no-user-gesture-required",
-            "--enable-features=PlatformHEVCDecoderSupport,D3D11VideoDecoder,MediaFoundationD3D11VideoCapture,WebRtcHideLocalIpsWithMdns",
-            "--enable-direct-composition-video-overlays",
-            "--enable-hardware-overlays=single-fullscreen,single-on-top,underlay",
-            "--enable-gpu-rasterization",
-            "--enable-zero-copy",
-            "--use-angle=d3d11"
-        });
-
-        var options = new CoreWebView2EnvironmentOptions(browserArgs);
-        _webViewEnvironment = await CoreWebView2Environment.CreateAsync(null, userDataFolder, options);
-    }
-
-    private async Task InitializeSessionAsync(int index, WebView2 webView)
-    {
-        if (_webViewEnvironment == null) return;
-
-        webView.DefaultBackgroundColor = System.Drawing.Color.Black;
-        await webView.EnsureCoreWebView2Async(_webViewEnvironment);
-
-        // Inject Warm Swap + WebRTC SCTP DataChannel Protobuf Mediator into every frame
-        if (!string.IsNullOrEmpty(_mediatorScript))
-        {
-            await webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(_mediatorScript);
-        }
-
-        // Re-apply mediator script & current display mode on NavigationCompleted as well
-        webView.CoreWebView2.NavigationCompleted += async (s, args) =>
-        {
-            try
-            {
-                if (!string.IsNullOrEmpty(_mediatorScript))
-                {
-                    await webView.CoreWebView2.ExecuteScriptAsync(_mediatorScript);
-                }
-                var mode = _displayModes[_displayModeIndex];
-                await webView.CoreWebView2.ExecuteScriptAsync($"window.__crdScreenFit && window.__crdScreenFit.setMode('{mode}');");
-            }
-            catch {}
-        };
-
-        // Keep HUD Overlay visible if CRD tries to request HTML5 Fullscreen
-        webView.CoreWebView2.ContainsFullScreenElementChanged += (s, args) =>
-        {
-            SyncHudWindowBounds();
-        };
-
-        // 1. Silent Scoped Clipboard Auto-Grant
-        webView.CoreWebView2.PermissionRequested += (s, args) =>
-        {
-            if (Uri.TryCreate(args.Uri, UriKind.Absolute, out var uri))
-            {
-                bool isCRD = uri.Scheme == Uri.UriSchemeHttps &&
-                             (uri.Host.Equals("remotedesktop.google.com", StringComparison.OrdinalIgnoreCase) ||
-                              uri.Host.Equals("remotedesktop.corp.google.com", StringComparison.OrdinalIgnoreCase));
-
-                if (isCRD && args.PermissionKind == CoreWebView2PermissionKind.ClipboardRead)
-                {
-                    args.State = (_currentSessionIndex == index)
-                        ? CoreWebView2PermissionState.Allow
-                        : CoreWebView2PermissionState.Deny;
-                    args.Handled = true;
-                    return;
-                }
-            }
-
-            if (args.PermissionKind != CoreWebView2PermissionKind.Notifications)
-            {
-                args.State = CoreWebView2PermissionState.Deny;
-                args.Handled = true;
-            }
-        };
-
-        // 2. Direct Session Reconnect Persistence (Save session ID URL on connect)
-        webView.CoreWebView2.SourceChanged += (s, args) =>
-        {
-            try
-            {
-                var source = webView.CoreWebView2.Source;
-                if (!string.IsNullOrEmpty(source) && source.Contains("/access/session/"))
-                {
-                    var session = _config.Sessions.FirstOrDefault(item => item.Index == index);
-                    if (session != null && session.Url != source)
-                    {
-                        session.Url = source;
-                        _config.Save();
-                    }
-                }
-            }
-            catch {}
-        };
-
-        // 3. Auto-detect connected machine name from document title
-        webView.CoreWebView2.DocumentTitleChanged += (s, args) =>
-        {
-            var title = webView.CoreWebView2.DocumentTitle;
-            if (!string.IsNullOrWhiteSpace(title))
-            {
-                var cleaned = title.Replace("- Chrome Remote Desktop", "")
-                                   .Replace("Chrome Remote Desktop", "")
-                                   .Trim();
-                if (!string.IsNullOrEmpty(cleaned) && cleaned != "Access" && cleaned != "Computers")
-                {
-                    Dispatcher.Invoke(() => UpdateSessionName(index, cleaned));
-                }
-            }
-        };
-
-        // 4. WebMessage bridge for DOM-level events, SCTP DataChannel Ready, & Telemetry
-        webView.WebMessageReceived += async (s, args) =>
-        {
-            try
-            {
-                var msg = args.TryGetWebMessageAsString();
-                if (msg == "SWITCH_1") SwitchToSession(1);
-                else if (msg == "SWITCH_2") SwitchToSession(2);
-                else if (msg == "SWITCH_3") SwitchToSession(3);
-                else if (msg == "CYCLE") CycleNextSession();
-                else if (msg == "TOGGLE_NOTCH") ToggleNotch();
-                else if (msg == "CYCLE_DISPLAY_MODE") CycleDisplayMode();
-                else if (msg == "TOGGLE_COCKPIT") ToggleCockpitMode();
-                else if (msg == "TOGGLE_RELATIVE_MOUSE") ToggleRelativeMouseMode();
-                else if (msg == "SYNC_NATIVE_RESOLUTION") await SyncSessionHostResolutionAsync(index);
-                else if (msg == "RELEASE_CURSOR") ReleaseCursor();
-                else if (msg == "DATACHANNEL_READY:control")
-                {
-                    if (_config.AutoSyncNativeResolution)
-                    {
-                        // 350ms settling gate ensures host WebRTC capturer & SDP negotiation finish before resolution inject
-                        _ = Task.Run(async () =>
-                        {
-                            await Task.Delay(350);
-                            await Dispatcher.InvokeAsync(async () =>
-                            {
-                                await SyncSessionHostResolutionAsync(index);
-                            });
-                        });
-                    }
-                }
-                else if (msg != null && msg.StartsWith("HOST_NAME:"))
-                {
-                    var name = msg.Substring("HOST_NAME:".Length).Trim();
-                    if (!string.IsNullOrEmpty(name))
-                    {
-                        Dispatcher.Invoke(() => UpdateSessionName(index, name));
-                    }
-                }
-                else if (msg != null && msg.StartsWith("{\"type\":\"STATS\""))
-                {
-                    if (_currentSessionIndex == index)
-                    {
-                        UpdateTelemetryBadge(msg);
-                    }
-                }
-            }
-            catch {}
-        };
-
-        // Navigate to session URL
-        var currentSession = _config.Sessions.FirstOrDefault(s => s.Index == index);
-        var url = currentSession?.Url ?? "https://remotedesktop.google.com/access";
-        webView.CoreWebView2.Navigate(url);
-    }
-
-    #region Native Chromoting Protobuf Resolution & Input Engine
-
-    public async Task SyncSessionHostResolutionAsync(int sessionIndex, DisplayLayoutMode? overrideMode = null)
-    {
-        var wv = GetWebViewByIndex(sessionIndex);
-        if (wv?.CoreWebView2 == null) return;
-
-        try
-        {
-            var handle = new WindowInteropHelper(this).Handle;
-            var mode = overrideMode ?? (_isCockpitMode
-                ? DisplayLayoutMode.CockpitDualSplit5050
-                : DisplayLayoutMode.FullBleedNative16By10);
-
-            var profile = DisplayTopologyDetector.GetOptimalHostResolution(mode, handle);
-            var syncPayloads = ChromotingProtobuf.BuildNativeResolutionSyncMessages(
-                profile.Width,
-                profile.Height,
-                (int)profile.Dpi,
-                screenId: 0,
-                targetFps: _displayTopology.RefreshRateHz > 0 ? _displayTopology.RefreshRateHz : 60,
-                losslessColor: _config.LosslessColorMode
-            );
-
-            string script = $"window.__crdSetHostResolution && window.__crdSetHostResolution({syncPayloads.AlignedWidth}, {syncPayloads.AlignedHeight}, {syncPayloads.Dpi}, ['{syncPayloads.ControlMessageBase64}']);";
-            await wv.CoreWebView2.ExecuteScriptAsync(script);
-
-            TxtNativeRes.Text = mode == DisplayLayoutMode.CockpitDualSplit5050
-                ? "8:10"
-                : profile.AspectRatio;
-            TxtNativeRes.Foreground = new SolidColorBrush(Color.FromRgb(124, 227, 139));
-        }
-        catch {}
-    }
-
-    private void OnRawHardwareMouseDelta(int deltaX, int deltaY, ushort buttonFlags, short wheelDelta)
-    {
-        if (!_isRelativeMouseActive || (deltaX == 0 && deltaY == 0 && wheelDelta == 0)) return;
-
-        _accumulatedRawDx += deltaX;
-        _accumulatedRawDy += deltaY;
-
-        var now = DateTime.UtcNow;
-        if ((now - _lastRawDeltaDispatch).TotalMilliseconds < 8 && wheelDelta == 0) return;
-
-        int dx = _accumulatedRawDx;
-        int dy = _accumulatedRawDy;
-        _accumulatedRawDx = 0;
-        _accumulatedRawDy = 0;
-        _lastRawDeltaDispatch = now;
-
-        var evMsg = new EventMessage
-        {
-            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            MouseEvent = new CRDLightweightARM.NativeProtocol.MouseEvent
-            {
-                DeltaX = dx,
-                DeltaY = dy,
-                WheelDeltaY = wheelDelta != 0 ? (float?)wheelDelta : null
-            }
-        };
-
-        string protoB64 = Convert.ToBase64String(evMsg.Encode(framed: false));
-        var wv = GetWebViewByIndex(_currentSessionIndex);
-        if (wv?.CoreWebView2 != null)
-        {
-            _ = wv.CoreWebView2.ExecuteScriptAsync($"window.__crdDispatchRawMouseDelta && window.__crdDispatchRawMouseDelta({dx}, {dy}, '{protoB64}');");
-        }
-    }
-
-    #endregion
-
-    private void UpdateTelemetryBadge(string json)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            int rtt = root.GetProperty("rtt").GetInt32();
-            int fps = root.GetProperty("fps").GetInt32();
-            int width = root.TryGetProperty("width", out var wProp) ? wProp.GetInt32() : 0;
-            int height = root.TryGetProperty("height", out var hProp) ? hProp.GetInt32() : 0;
-
-            Dispatcher.Invoke(() =>
-            {
-                TxtTelemetry.Text = $"{rtt}ms {fps}f";
-                if (width > 0 && height > 0)
-                {
-                    TxtTelemetry.ToolTip = $"WebRTC Stream: {width}×{height} @ {fps} FPS • RTT: {rtt} ms • {_oryonGovernor.HardwareBadge}";
-                }
-
-                if (rtt < 35 && fps >= 30)
-                {
-                    TelemetryHealthDot.Fill = (Brush)FindResource("AccentGreenBrush");
-                }
-                else if (rtt < 80)
-                {
-                    TelemetryHealthDot.Fill = (Brush)FindResource("AccentAmberBrush");
-                }
-                else
-                {
-                    TelemetryHealthDot.Fill = new SolidColorBrush(Color.FromRgb(255, 107, 107));
-                }
-            });
-        }
-        catch {}
-    }
-
-    public void ForceForegroundActivate()
-    {
-        var handle = new WindowInteropHelper(this).EnsureHandle();
-        IntPtr foregroundHwnd = GetForegroundWindow();
-        uint foregroundThreadId = GetWindowThreadProcessId(foregroundHwnd, IntPtr.Zero);
-        uint currentThreadId = GetCurrentThreadId();
-
-        if (foregroundThreadId != currentThreadId && foregroundThreadId != 0)
-        {
-            AttachThreadInput(currentThreadId, foregroundThreadId, true);
-            ShowWindow(handle, 9); // SW_RESTORE
-            SetForegroundWindow(handle);
-            AttachThreadInput(currentThreadId, foregroundThreadId, false);
-        }
-        else
-        {
-            ShowWindow(handle, 9);
-            SetForegroundWindow(handle);
-        }
-
-        Activate();
-        Focus();
-        SyncHudWindowBounds();
-    }
-
-    public void ToggleWindowVisibility()
-    {
-        if (Visibility == Visibility.Visible && WindowState != WindowState.Minimized && IsOurWindowOrWebViewActive())
-        {
-            HideToTray();
-        }
-        else
-        {
-            RestoreFromTray();
-        }
-    }
-
-    public async void HideToTray()
-    {
-        ReleaseCursor();
-        UninstallLowLevelKeyboardHook();
-        _activeThumbnailTimer?.Stop();
-        _oryonGovernor.RevertMainThreadPromotion();
-
-        var wv = GetWebViewByIndex(_currentSessionIndex);
-        if (wv?.CoreWebView2 != null)
-        {
-            await wv.CoreWebView2.ExecuteScriptAsync("window.__crdPauseSession && window.__crdPauseSession();");
-        }
-
-        for (int i = 1; i <= 3; i++)
-        {
-            var sessionWv = GetWebViewByIndex(i);
-            if (sessionWv?.CoreWebView2 != null)
-            {
-                sessionWv.CoreWebView2.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
-                _oryonGovernor.ApplySessionProcessQoS(sessionWv.CoreWebView2.BrowserProcessId, isEcoStandby: true);
-            }
-        }
-
-        _hudWindow?.Hide();
-        Visibility = Visibility.Hidden;
-        ShowInTaskbar = false;
-        _trayIcon.UpdateTooltip($"CRD (EcoQoS Standby) - {GetSessionName(_currentSessionIndex)}");
-    }
-
-    public async void RestoreFromTray()
-    {
-        InstallLowLevelKeyboardHook();
-        _oryonGovernor.PromoteMainThreadForLowLatency();
-        _activeThumbnailTimer?.Start();
-
-        ShowInTaskbar = true;
-        Visibility = Visibility.Visible;
-        WindowState = WindowState.Maximized;
-
-        ForceForegroundActivate();
-
-        var wv = GetWebViewByIndex(_currentSessionIndex);
-        if (wv?.CoreWebView2 != null)
-        {
-            wv.CoreWebView2.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Normal;
-            _oryonGovernor.ApplySessionProcessQoS(wv.CoreWebView2.BrowserProcessId, isEcoStandby: false);
-            await wv.CoreWebView2.ExecuteScriptAsync("window.__crdResumeSession && window.__crdResumeSession();");
-        }
-
-        _trayIcon.UpdateTooltip($"CRD (Active) - {GetSessionName(_currentSessionIndex)}");
-    }
-
-    private void ShowTrayContextMenu()
-    {
-        var menu = new ContextMenu
-        {
-            Background = (Brush)FindResource("NotchBackgroundBrush"),
-            BorderBrush = (Brush)FindResource("NotchBorderBrush"),
-            BorderThickness = new Thickness(1),
-            Foreground = (Brush)FindResource("TextPrimaryBrush")
-        };
-
-        var headerItem = new MenuItem
-        {
-            Header = _oryonGovernor.HardwareBadge,
-            IsEnabled = false,
-            Foreground = (Brush)FindResource("TextSecondaryBrush"),
-            FontWeight = FontWeights.Bold
-        };
-        menu.Items.Add(headerItem);
-        menu.Items.Add(new Separator { Background = (Brush)FindResource("NotchBorderBrush") });
-
-        var itemShow = new MenuItem { Header = "🗖 Show / Restore Client (Ctrl+Alt+R)", Foreground = Brushes.White };
-        itemShow.Click += (s, e) => RestoreFromTray();
-        menu.Items.Add(itemShow);
-
-        var itemSyncRes = new MenuItem
-        {
-            Header = $"📐 Sync Native {_displayTopology.PhysicalWidth}×{_displayTopology.PhysicalHeight} ({_displayTopology.AspectRatio})",
-            Foreground = new SolidColorBrush(Color.FromRgb(124, 227, 139))
-        };
-        itemSyncRes.Click += async (s, e) =>
-        {
-            RestoreFromTray();
-            await SyncSessionHostResolutionAsync(_currentSessionIndex);
-        };
-        menu.Items.Add(itemSyncRes);
-
-        menu.Items.Add(new Separator { Background = (Brush)FindResource("NotchBorderBrush") });
-
-        for (int i = 1; i <= 3; i++)
-        {
-            int slot = i;
-            var name = GetSessionName(slot);
-            var itemSlot = new MenuItem
-            {
-                Header = $"{(slot == _currentSessionIndex ? "●" : "○")} Slot {slot}: {name}",
-                Foreground = (slot == _currentSessionIndex) ? (Brush)FindResource("AccentGreenBrush") : Brushes.White
-            };
-            itemSlot.Click += (s, e) =>
-            {
-                RestoreFromTray();
-                SwitchToSession(slot);
-            };
-            menu.Items.Add(itemSlot);
-        }
-
-        menu.Items.Add(new Separator { Background = (Brush)FindResource("NotchBorderBrush") });
-
-        var itemSettings = new MenuItem { Header = "⚙ Settings...", Foreground = Brushes.White };
-        itemSettings.Click += (s, e) =>
-        {
-            RestoreFromTray();
-            BtnSettings_Click(this, new RoutedEventArgs());
-        };
-        menu.Items.Add(itemSettings);
-
-        var itemExit = new MenuItem { Header = "✕ Disconnect All & Exit", Foreground = new SolidColorBrush(Color.FromRgb(255, 100, 100)) };
-        itemExit.Click += (s, e) =>
-        {
-            _isExplicitExit = true;
-            _trayIcon.Dispose();
-            Application.Current.Shutdown();
-        };
-        menu.Items.Add(itemExit);
-
-        menu.IsOpen = true;
-    }
-
-    private string GetSessionName(int index)
-    {
-        return _config.Sessions.FirstOrDefault(s => s.Index == index)?.Name ?? $"Session {index}";
-    }
-
-    private async Task CaptureSessionThumbnailAsync(int sessionIndex, WebView2 webView)
-    {
-        try
-        {
-            using var memStream = new MemoryStream();
-            await webView.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Jpeg, memStream);
-            memStream.Position = 0;
-
-            var bitmap = new BitmapImage();
-            bitmap.BeginInit();
-            bitmap.CacheOption = BitmapCacheOption.OnLoad;
-            bitmap.DecodePixelWidth = 320;
-            bitmap.StreamSource = memStream;
-            bitmap.EndInit();
-            bitmap.Freeze();
-
-            _sessionThumbnails[sessionIndex] = bitmap;
-        }
-        catch {}
-    }
-
-    public void SwitchToSession(int targetIndex)
-    {
-        if (targetIndex < 1 || targetIndex > 3) return;
-
-        ThumbnailPeekPopup.IsOpen = false;
-        _thumbnailCloseTimer.Stop();
-
-        int prevIndex = _currentSessionIndex;
-        var prevView = GetWebViewByIndex(prevIndex);
-        var targetView = GetWebViewByIndex(targetIndex);
-
-        _currentSessionIndex = targetIndex;
-        UpdateSlotStatusPills();
-        UpdateAudioMuteMatrix();
-
-        if (_isCockpitMode)
-        {
-            targetView?.Focus();
-            return;
-        }
-
-        // 1. Instantaneous visual swap: 0ms UI latency
-        int seq = ++_switchSequence;
-
-        if (targetView != null)
-        {
-            Panel.SetZIndex(targetView, 10);
-            targetView.Visibility = Visibility.Visible;
-            targetView.Focus();
-        }
-
-        if (prevView != null && prevView != targetView)
-        {
-            Panel.SetZIndex(prevView, 0);
-        }
-
-        // 2. Non-blocking asynchronous background warm-swap & thumbnail capture
-        _ = Task.Run(async () =>
-        {
-            // Capture thumbnail of the session we just left (while still painted in visual tree behind active slot)
-            if (prevView != null && prevView != targetView)
-            {
-                await Dispatcher.InvokeAsync(async () =>
-                {
-                    try
-                    {
-                        await CaptureSessionThumbnailAsync(prevIndex, prevView);
-                    }
-                    finally
-                    {
-                        // Safely collapse after thumbnail is captured, provided user didn't switch back
-                        if (_currentSessionIndex != prevIndex)
-                        {
-                            prevView.Visibility = Visibility.Collapsed;
-                        }
-                    }
-                });
-            }
-
-            // Power-throttle previous session only if sequence is still current
-            if (prevView?.CoreWebView2 != null && _config.EfficiencyMode != WarmMode.LiveHot)
-            {
-                await Dispatcher.InvokeAsync(async () =>
-                {
-                    if (seq != _switchSequence || _currentSessionIndex == prevIndex) return;
-                    try
-                    {
-                        await prevView.CoreWebView2.ExecuteScriptAsync("window.__crdPauseSession && window.__crdPauseSession();");
-                        if (_config.EfficiencyMode == WarmMode.EcoWarm || _powerGovernor.CurrentPowerSource == PowerSource.Battery)
-                        {
-                            prevView.CoreWebView2.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
-                            _oryonGovernor.ApplySessionProcessQoS(prevView.CoreWebView2.BrowserProcessId, isEcoStandby: true);
-                        }
-                    }
-                    catch {}
-                });
-            }
-
-            // Wake & resume target session only if sequence is still current
-            if (targetView?.CoreWebView2 != null)
-            {
-                await Dispatcher.InvokeAsync(async () =>
-                {
-                    if (seq != _switchSequence) return;
-                    try
-                    {
-                        targetView.CoreWebView2.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Normal;
-                        _oryonGovernor.ApplySessionProcessQoS(targetView.CoreWebView2.BrowserProcessId, isEcoStandby: false);
-
-                        if (_config.EfficiencyMode != WarmMode.LiveHot)
-                        {
-                            await targetView.CoreWebView2.ExecuteScriptAsync("window.__crdResumeSession && window.__crdResumeSession();");
-                        }
-                    }
-                    catch {}
-                });
-            }
-        });
-    }
-
-    private void UpdateAudioMuteMatrix()
-    {
-        for (int i = 1; i <= 3; i++)
-        {
-            var wv = GetWebViewByIndex(i);
-            if (wv?.CoreWebView2 == null) continue;
-
-            wv.CoreWebView2.IsMuted = (i != _currentSessionIndex);
-        }
-    }
-
-    private void CycleNextSession()
-    {
-        var next = _currentSessionIndex + 1;
-        if (next > 3) next = 1;
-        SwitchToSession(next);
-    }
-
-    private WebView2 GetWebViewByIndex(int index) => index switch
-    {
-        1 => WebViewSession1,
-        2 => WebViewSession2,
-        3 => WebViewSession3,
-        _ => WebViewSession1
-    };
-
-    private void UpdateSlotStatusPills()
-    {
-        DotSession1.Fill = _currentSessionIndex == 1 ? (Brush)FindResource("AccentGreenBrush") : (Brush)FindResource("AccentAmberBrush");
-        DotSession2.Fill = _currentSessionIndex == 2 ? (Brush)FindResource("AccentGreenBrush") : (Brush)FindResource("AccentAmberBrush");
-        DotSession3.Fill = _currentSessionIndex == 3 ? (Brush)FindResource("AccentGreenBrush") : (Brush)FindResource("TextSecondaryBrush");
-    }
-
-    private void UpdateLabelsFromConfig()
-    {
-        LabelSession1.Text = _config.Sessions.FirstOrDefault(s => s.Index == 1)?.Name ?? "Session 1";
-        LabelSession2.Text = _config.Sessions.FirstOrDefault(s => s.Index == 2)?.Name ?? "Session 2";
-        LabelSession3.Text = _config.Sessions.FirstOrDefault(s => s.Index == 3)?.Name ?? "Session 3";
-    }
-
-    private void UpdateSessionName(int index, string name)
-    {
-        var session = _config.Sessions.FirstOrDefault(s => s.Index == index);
-        if (session != null)
-        {
-            session.Name = name;
-            _config.Save();
-            UpdateLabelsFromConfig();
-        }
-    }
-
-    #region Precision Touchpad Gestures
-
-    private void Window_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
-    {
-        Point pos = e.GetPosition(this);
-        if (pos.Y > 120) return;
-
-        if (Keyboard.Modifiers == ModifierKeys.Shift && Math.Abs(e.Delta) >= 400)
-        {
-            if ((DateTime.Now - _lastSwipeTime).TotalMilliseconds > 600)
-            {
-                _lastSwipeTime = DateTime.Now;
-                if (e.Delta < 0) CycleNextSession();
-                else SwitchToSession(_currentSessionIndex == 1 ? 3 : _currentSessionIndex - 1);
-                e.Handled = true;
-            }
-        }
-    }
-
-    #endregion
-
-    #region Cockpit Split & Relative Mouse Modes
-
-    public async void ToggleCockpitMode()
-    {
-        _isCockpitMode = !_isCockpitMode;
-
-        if (_isCockpitMode)
-        {
-            ColDivider.Width = new GridLength(1);
-            ColRight.Width = new GridLength(1, GridUnitType.Star);
-            SplitDivider.Visibility = Visibility.Visible;
-            TxtSplitMode.Foreground = (Brush)FindResource("AccentGreenBrush");
-
-            Grid.SetColumn(GetWebViewByIndex(_currentSessionIndex), 0);
-            GetWebViewByIndex(_currentSessionIndex).Visibility = Visibility.Visible;
-
-            _cockpitSecondaryIndex = _currentSessionIndex == 1 ? 2 : 1;
-            var secondaryView = GetWebViewByIndex(_cockpitSecondaryIndex);
-            Grid.SetColumn(secondaryView, 2);
-            secondaryView.Visibility = Visibility.Visible;
-
-            if (secondaryView.CoreWebView2 != null)
-            {
-                secondaryView.CoreWebView2.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Low;
-                await secondaryView.CoreWebView2.ExecuteScriptAsync("window.__crdResumeSession && window.__crdResumeSession();");
-                if (_config.AutoSyncNativeResolution)
-                {
-                    await SyncSessionHostResolutionAsync(_cockpitSecondaryIndex, DisplayLayoutMode.CockpitDualSplit5050);
-                }
-                else
-                {
-                    await secondaryView.CoreWebView2.ExecuteScriptAsync("window.dispatchEvent(new Event('resize'));");
-                }
-            }
-
-            var primaryView = GetWebViewByIndex(_currentSessionIndex);
-            if (primaryView.CoreWebView2 != null)
-            {
-                if (_config.AutoSyncNativeResolution)
-                {
-                    await SyncSessionHostResolutionAsync(_currentSessionIndex, DisplayLayoutMode.CockpitDualSplit5050);
-                }
-                else
-                {
-                    await primaryView.CoreWebView2.ExecuteScriptAsync("window.dispatchEvent(new Event('resize'));");
-                }
-            }
-        }
-        else
-        {
-            ColDivider.Width = new GridLength(0);
-            ColRight.Width = new GridLength(0);
-            SplitDivider.Visibility = Visibility.Collapsed;
-            TxtSplitMode.Foreground = new SolidColorBrush(Color.FromRgb(204, 204, 221));
-
-            for (int i = 1; i <= 3; i++)
-            {
-                var wv = GetWebViewByIndex(i);
-                Grid.SetColumn(wv, 0);
-                wv.Visibility = (i == _currentSessionIndex) ? Visibility.Visible : Visibility.Collapsed;
-            }
-
-            var primaryView = GetWebViewByIndex(_currentSessionIndex);
-            if (primaryView.CoreWebView2 != null)
-            {
-                primaryView.CoreWebView2.MemoryUsageTargetLevel = CoreWebView2MemoryUsageTargetLevel.Normal;
-                if (_config.AutoSyncNativeResolution)
-                {
-                    await SyncSessionHostResolutionAsync(_currentSessionIndex, DisplayLayoutMode.FullBleedNative16By10);
-                }
-                else
-                {
-                    await primaryView.CoreWebView2.ExecuteScriptAsync("window.dispatchEvent(new Event('resize'));");
-                }
-            }
-        }
-
-        UpdateAudioMuteMatrix();
-    }
-
-    private void BtnSplitMode_Click(object sender, RoutedEventArgs e) => ToggleCockpitMode();
-
-    public async void ToggleRelativeMouseMode()
-    {
-        _isRelativeMouseActive = !_isRelativeMouseActive;
-        _rawMouseEngine.IsRelativeModeActive = _isRelativeMouseActive;
-        var wv = GetWebViewByIndex(_currentSessionIndex);
-
-        if (_isRelativeMouseActive)
-        {
-            TxtRelativeMouse.Foreground = (Brush)FindResource("AccentGreenBrush");
-            if (wv?.CoreWebView2 != null)
-            {
-                string cdpClick = "{\"type\":\"mousePressed\",\"x\":10,\"y\":10,\"button\":\"left\",\"clickCount\":1}";
-                await wv.CoreWebView2.CallDevToolsProtocolMethodAsync("Input.dispatchMouseEvent", cdpClick);
-                cdpClick = "{\"type\":\"mouseReleased\",\"x\":10,\"y\":10,\"button\":\"left\",\"clickCount\":1}";
-                await wv.CoreWebView2.CallDevToolsProtocolMethodAsync("Input.dispatchMouseEvent", cdpClick);
-
-                await wv.CoreWebView2.ExecuteScriptAsync("window.__crdEnterPointerLock && window.__crdEnterPointerLock();");
-            }
-
-            _rawMouseEngine.SetCursorConfinement(true);
-        }
-        else
-        {
-            ReleaseCursor();
-        }
-    }
-
-    public async void ReleaseCursor()
-    {
-        _isRelativeMouseActive = false;
-        _rawMouseEngine.IsRelativeModeActive = false;
-        _rawMouseEngine.SetCursorConfinement(false);
-        TxtRelativeMouse.Foreground = new SolidColorBrush(Color.FromRgb(204, 204, 221));
-        ClipCursor(IntPtr.Zero);
-
-        var wv = GetWebViewByIndex(_currentSessionIndex);
-        if (wv?.CoreWebView2 != null)
-        {
-            await wv.CoreWebView2.ExecuteScriptAsync("window.__crdExitPointerLock && window.__crdExitPointerLock();");
-        }
-        ShowNotch();
-    }
-
-    private void BtnRelativeMouse_Click(object sender, RoutedEventArgs e) => ToggleRelativeMouseMode();
-
-    #endregion
-
-    #region Thumbnail Peek Hover & Direct Session Switching
-
-    private void SessionPill_MouseEnter(object sender, MouseEventArgs e)
-    {
-        if (sender is Button btn && int.TryParse(btn.Tag?.ToString(), out int idx))
-        {
-            _thumbnailCloseTimer.Stop();
-            _hoveredSessionIndex = idx;
-
-            if (idx != _currentSessionIndex && _sessionThumbnails.TryGetValue(idx, out var thumb))
-            {
-                ImgThumbnailPeek.Source = thumb;
-                var sessionName = _config.Sessions.FirstOrDefault(s => s.Index == idx)?.Name ?? $"Session {idx}";
-                TxtThumbnailStatus.Text = $"{sessionName} • Click to Switch";
-                ThumbnailPeekPopup.IsOpen = true;
-            }
-        }
-    }
-
-    private void SessionPill_MouseLeave(object sender, MouseEventArgs e)
-    {
-        _thumbnailCloseTimer.Start();
-    }
-
-    private void ThumbnailBorder_MouseEnter(object sender, MouseEventArgs e)
-    {
-        _thumbnailCloseTimer.Stop();
-    }
-
-    private void ThumbnailBorder_MouseLeave(object sender, MouseEventArgs e)
-    {
-        _thumbnailCloseTimer.Start();
-    }
-
-    private void ThumbnailPeek_PreviewMouseDown(object sender, MouseButtonEventArgs e)
-    {
-        ThumbnailPeekPopup.IsOpen = false;
-        _thumbnailCloseTimer.Stop();
-        if (_hoveredSessionIndex >= 1 && _hoveredSessionIndex <= 3)
-        {
-            SwitchToSession(_hoveredSessionIndex);
-            e.Handled = true;
-        }
-    }
-
-    private void BtnSession1_PreviewMouseDown(object sender, MouseButtonEventArgs e)
-    {
-        SwitchToSession(1);
-        e.Handled = true;
-    }
-
-    private void BtnSession2_PreviewMouseDown(object sender, MouseButtonEventArgs e)
-    {
-        SwitchToSession(2);
-        e.Handled = true;
-    }
-
-    private void BtnSession3_PreviewMouseDown(object sender, MouseButtonEventArgs e)
-    {
-        SwitchToSession(3);
-        e.Handled = true;
-    }
-
-    #endregion
-
-    #region QoL Controls: Display Mode, Native 16:10 Sync & System Keys
-
-    public async void CycleRemoteMonitor()
-    {
-        _remoteMonitorIndex = (_remoteMonitorIndex + 1) % 3;
-        string displayId = _remoteMonitorIndex switch
-        {
-            0 => "0",
-            1 => "1",
-            _ => "all"
-        };
-
-        TxtSwitchMonitor.Text = _remoteMonitorIndex switch
-        {
-            0 => "🖥 Mon 1",
-            1 => "🖥 Mon 2",
-            _ => "🖥 All"
-        };
-        TxtSwitchMonitor.Foreground = new SolidColorBrush(Color.FromRgb(124, 227, 139));
-
-        var (_, b64) = ChromotingProtobuf.BuildSelectDisplayMessage(displayId);
-        var wv = GetWebViewByIndex(_currentSessionIndex);
-        if (wv?.CoreWebView2 != null)
-        {
-            await wv.CoreWebView2.ExecuteScriptAsync($"window.__crdSelectDisplay && window.__crdSelectDisplay('{displayId}', '{b64}');");
-        }
-    }
-
-    private void BtnSwitchMonitor_Click(object sender, RoutedEventArgs e)
-    {
-        SystemKeysPopup.IsOpen = false;
-        CycleRemoteMonitor();
-    }
-
-    public async void CycleDisplayMode()
-    {
-        _displayModeIndex = (_displayModeIndex + 1) % _displayModes.Length;
-        var mode = _displayModes[_displayModeIndex];
-
-        TxtDisplayMode.Text = mode switch
-        {
-            "contain" => "⛶ Fit to Screen",
-            "fill" => "↔ Stretch",
-            "cover" => "🗖 Zoom",
-            _ => "⛶ Fit to Screen"
-        };
-
-        var currentView = GetWebViewByIndex(_currentSessionIndex);
-        if (currentView?.CoreWebView2 != null)
-        {
-            await currentView.CoreWebView2.ExecuteScriptAsync($"window.__crdScreenFit && window.__crdScreenFit.setMode('{mode}');");
-        }
-    }
-
-    private void BtnDisplayMode_Click(object sender, RoutedEventArgs e) => CycleDisplayMode();
-
-    private async void BtnNativeRes_Click(object sender, RoutedEventArgs e)
-    {
-        SystemKeysPopup.IsOpen = false;
-        await SyncSessionHostResolutionAsync(_currentSessionIndex);
-        if (_isCockpitMode)
-        {
-            await SyncSessionHostResolutionAsync(_cockpitSecondaryIndex);
-        }
-    }
-
-    private void BtnSystemKeys_Click(object sender, RoutedEventArgs e)
-    {
-        SystemKeysPopup.IsOpen = !SystemKeysPopup.IsOpen;
-    }
-
-    private async Task DispatchUsbHidChordProtoAsync(WebView2 wv, UsbHidKeycodeMapper.SystemChord chord)
-    {
-        if (wv?.CoreWebView2 == null) return;
-        try
-        {
-            var events = UsbHidKeycodeMapper.BuildChordEventMessages(chord, framed: false);
-            var b64List = events.Select(ev => $"'{Convert.ToBase64String(ev.Encode(framed: false))}'");
-            string jsArray = "[" + string.Join(",", b64List) + "]";
-            await wv.CoreWebView2.ExecuteScriptAsync($"window.__crdInjectEventProtoBase64 && window.__crdInjectEventProtoBase64({jsArray});");
-        }
-        catch {}
-    }
-
-    private async void BtnSendCtrlAltDel_Click(object sender, RoutedEventArgs e)
-    {
-        SystemKeysPopup.IsOpen = false;
-        var wv = GetWebViewByIndex(_currentSessionIndex);
-        if (wv?.CoreWebView2 != null)
-        {
-            await DispatchUsbHidChordProtoAsync(wv, UsbHidKeycodeMapper.SystemChord.CtrlAltDel);
-            await wv.CoreWebView2.ExecuteScriptAsync("window.__crdSendCtrlAltDel && window.__crdSendCtrlAltDel();");
-            await SendCdpKeyChordAsync(wv, 0x2E, "Delete", "Delete", 3);
-        }
-    }
-
-    private async void BtnSendWinL_Click(object sender, RoutedEventArgs e)
-    {
-        SystemKeysPopup.IsOpen = false;
-        var wv = GetWebViewByIndex(_currentSessionIndex);
-        if (wv?.CoreWebView2 != null)
-        {
-            await DispatchUsbHidChordProtoAsync(wv, UsbHidKeycodeMapper.SystemChord.WinL);
-            await wv.CoreWebView2.ExecuteScriptAsync("window.__crdSendLockWorkstation && window.__crdSendLockWorkstation();");
-        }
-    }
-
-    private async void BtnSendWinD_Click(object sender, RoutedEventArgs e)
-    {
-        SystemKeysPopup.IsOpen = false;
-        var wv = GetWebViewByIndex(_currentSessionIndex);
-        if (wv != null)
-        {
-            await DispatchUsbHidChordProtoAsync(wv, UsbHidKeycodeMapper.SystemChord.WinD);
-            await SendCdpKeyChordAsync(wv, 68, "d", "KeyD", 4);
-        }
-    }
-
-    private async void BtnSendTaskMgr_Click(object sender, RoutedEventArgs e)
-    {
-        SystemKeysPopup.IsOpen = false;
-        var wv = GetWebViewByIndex(_currentSessionIndex);
-        if (wv != null)
-        {
-            await DispatchUsbHidChordProtoAsync(wv, UsbHidKeycodeMapper.SystemChord.CtrlShiftEsc);
-            await SendCdpKeyChordAsync(wv, 27, "Escape", "Escape", 10);
-        }
-    }
-
-    private async Task SendCdpKeyChordAsync(WebView2 wv, int virtualKeyCode, string key, string code, int modifiers)
-    {
-        if (wv?.CoreWebView2 == null) return;
-        try
-        {
-            await wv.CoreWebView2.CallDevToolsProtocolMethodAsync("Input.dispatchKeyEvent", 
-                $"{{\"type\":\"rawKeyDown\",\"windowsVirtualKeyCode\":{virtualKeyCode},\"key\":\"{key}\",\"code\":\"{code}\",\"modifiers\":{modifiers}}}");
-            await Task.Delay(40);
-        }
-        finally
-        {
-            await wv.CoreWebView2.CallDevToolsProtocolMethodAsync("Input.dispatchKeyEvent", 
-                $"{{\"type\":\"keyUp\",\"windowsVirtualKeyCode\":{virtualKeyCode},\"key\":\"{key}\",\"code\":\"{code}\",\"modifiers\":0}}");
-        }
-    }
-
-    private void BtnReleaseMouse_Click(object sender, RoutedEventArgs e)
-    {
-        SystemKeysPopup.IsOpen = false;
-        ReleaseCursor();
-    }
-
-    #endregion
-
-    #region Top Notch Hover & Animation
-
-    private void TopHoverTrigger_MouseEnter(object sender, MouseEventArgs e)
-    {
-        _collapseDebounceTimer.Stop();
-        _dwellTimer.Start();
-    }
-
-    private void TopHoverTrigger_MouseLeave(object sender, MouseEventArgs e)
-    {
-        _dwellTimer.Stop();
-    }
-
-    private void DwellTimer_Tick(object? sender, EventArgs e)
-    {
-        _dwellTimer.Stop();
-        ShowNotch();
-    }
-
-    private void TopNotch_SizeChanged(object sender, SizeChangedEventArgs e)
-    {
-        TopHoverTrigger.Width = Math.Max(420, e.NewSize.Width + 30);
-    }
-
-    private void TopNotch_MouseEnter(object sender, MouseEventArgs e)
-    {
-        _collapseDebounceTimer.Stop();
-    }
-
-    private void TopNotch_MouseLeave(object sender, MouseEventArgs e)
-    {
-        if (!_isPinned)
-        {
-            _collapseDebounceTimer.Start();
-        }
-    }
-
-    private void CollapseDebounceTimer_Tick(object? sender, EventArgs e)
-    {
-        _collapseDebounceTimer.Stop();
-        HideNotch();
-    }
-
-    private void ShowNotch()
-    {
-        if (_isNotchVisible) return;
-        _isNotchVisible = true;
-
-        var anim = new DoubleAnimation(0, TimeSpan.FromMilliseconds(120))
-        {
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
-        };
-        NotchTransform.BeginAnimation(TranslateTransform.YProperty, anim);
-    }
-
-    private void HideNotch()
-    {
-        if (!_isNotchVisible) return;
-        _isNotchVisible = false;
-
-        var anim = new DoubleAnimation(-46, TimeSpan.FromMilliseconds(150))
-        {
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
-        };
-        NotchTransform.BeginAnimation(TranslateTransform.YProperty, anim);
-    }
-
-    private void ToggleNotch()
-    {
-        if (_isNotchVisible) HideNotch();
-        else ShowNotch();
-    }
-
-    #endregion
-
-    #region Hotkeys & Input
-
-    private async void Window_KeyDown(object sender, KeyEventArgs e)
-    {
-        var isCtrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
-        var isAlt = (Keyboard.Modifiers & ModifierKeys.Alt) != 0;
-
-        if (isCtrl && isAlt)
-        {
-            switch (e.Key)
-            {
-                case Key.D1:
-                case Key.NumPad1:
-                    SwitchToSession(1);
-                    e.Handled = true;
-                    break;
-                case Key.D2:
-                case Key.NumPad2:
-                    SwitchToSession(2);
-                    e.Handled = true;
-                    break;
-                case Key.D3:
-                case Key.NumPad3:
-                    SwitchToSession(3);
-                    e.Handled = true;
-                    break;
-                case Key.Tab:
-                    CycleNextSession();
-                    e.Handled = true;
-                    break;
-                case Key.S:
-                    ToggleNotch();
-                    e.Handled = true;
-                    break;
-                case Key.D:
-                    CycleDisplayMode();
-                    e.Handled = true;
-                    break;
-                case Key.C:
-                    ToggleCockpitMode();
-                    e.Handled = true;
-                    break;
-                case Key.M:
-                    ToggleRelativeMouseMode();
-                    e.Handled = true;
-                    break;
-                case Key.N:
-                    await SyncSessionHostResolutionAsync(_currentSessionIndex);
-                    e.Handled = true;
-                    break;
-                case Key.O:
-                    CycleRemoteMonitor();
-                    e.Handled = true;
-                    break;
-                case Key.Home:
-                    ReleaseCursor();
-                    e.Handled = true;
-                    break;
-            }
-        }
-        else if (e.Key == Key.F11)
-        {
-            BtnFullscreen_Click(this, new RoutedEventArgs());
-            e.Handled = true;
-        }
-    }
-
-    #endregion
-
-    #region Button Handlers & Settings
-
-    private void BtnSession1_Click(object sender, RoutedEventArgs e) => SwitchToSession(1);
-    private void BtnSession2_Click(object sender, RoutedEventArgs e) => SwitchToSession(2);
-    private void BtnSession3_Click(object sender, RoutedEventArgs e) => SwitchToSession(3);
-
-    private void BtnPin_Click(object sender, RoutedEventArgs e)
-    {
-        _isPinned = !_isPinned;
-        TxtPin.Text = _isPinned ? "📌" : "▲";
-        if (!_isPinned) HideNotch();
-        else ShowNotch();
-    }
-
-    private void BtnSettings_Click(object sender, RoutedEventArgs e)
-    {
-        TxtName1.Text = _config.Sessions.FirstOrDefault(s => s.Index == 1)?.Name ?? "Session 1";
-        TxtUrl1.Text = _config.Sessions.FirstOrDefault(s => s.Index == 1)?.Url ?? "";
-        TxtName2.Text = _config.Sessions.FirstOrDefault(s => s.Index == 2)?.Name ?? "Session 2";
-        TxtUrl2.Text = _config.Sessions.FirstOrDefault(s => s.Index == 2)?.Url ?? "";
-        TxtName3.Text = _config.Sessions.FirstOrDefault(s => s.Index == 3)?.Name ?? "Session 3";
-        TxtUrl3.Text = _config.Sessions.FirstOrDefault(s => s.Index == 3)?.Url ?? "";
-
-        RadioUltraWarm.IsChecked = _config.EfficiencyMode == WarmMode.UltraWarm;
-        RadioEcoWarm.IsChecked = _config.EfficiencyMode == WarmMode.EcoWarm;
-        RadioLiveHot.IsChecked = _config.EfficiencyMode == WarmMode.LiveHot;
-
-        ChkAutoSyncResolution.IsChecked = _config.AutoSyncNativeResolution;
-        ChkLosslessColor.IsChecked = _config.LosslessColorMode;
-
-        SettingsOverlay.Visibility = Visibility.Visible;
-        if (_hudWindow != null)
-        {
-            _hudWindow.Focusable = true;
-            _hudWindow.Activate();
-        }
-    }
-
-    private async void BtnSettingsSave_Click(object sender, RoutedEventArgs e)
-    {
-        _config.Sessions[0].Name = TxtName1.Text;
-        _config.Sessions[0].Url = TxtUrl1.Text;
-        _config.Sessions[1].Name = TxtName2.Text;
-        _config.Sessions[1].Url = TxtUrl2.Text;
-        _config.Sessions[2].Name = TxtName3.Text;
-        _config.Sessions[2].Url = TxtUrl3.Text;
-
-        if (RadioUltraWarm.IsChecked == true) _config.EfficiencyMode = WarmMode.UltraWarm;
-        else if (RadioEcoWarm.IsChecked == true) _config.EfficiencyMode = WarmMode.EcoWarm;
-        else if (RadioLiveHot.IsChecked == true) _config.EfficiencyMode = WarmMode.LiveHot;
-
-        _config.AutoSyncNativeResolution = ChkAutoSyncResolution.IsChecked == true;
-        _config.LosslessColorMode = ChkLosslessColor.IsChecked == true;
-
-        _config.Save();
-        UpdateLabelsFromConfig();
-
-        SettingsOverlay.Visibility = Visibility.Collapsed;
-        Activate();
-
-        if (_config.AutoSyncNativeResolution)
-        {
-            await SyncSessionHostResolutionAsync(_currentSessionIndex);
-        }
-    }
-
-    private void BtnSettingsCancel_Click(object sender, RoutedEventArgs e)
-    {
-        SettingsOverlay.Visibility = Visibility.Collapsed;
-        Activate();
-    }
-
-    private void BtnFullscreen_Click(object sender, RoutedEventArgs e)
-    {
-        if (WindowState == WindowState.Maximized && WindowStyle == WindowStyle.None)
-        {
-            WindowState = WindowState.Normal;
-            WindowStyle = WindowStyle.SingleBorderWindow;
-        }
-        else
-        {
-            WindowStyle = WindowStyle.None;
-            WindowState = WindowState.Maximized;
-        }
-        SyncHudWindowBounds();
-    }
-
-    private void BtnClose_Click(object sender, RoutedEventArgs e)
-    {
-        Close();
-    }
-    private void TrySetWindowIcon()
-    {
-        try
-        {
-            // 1. Try loading embedded WPF pack resource
-            var uri = new Uri("pack://application:,,,/CRDLightweightARM;component/app.ico", UriKind.Absolute);
-            var streamInfo = Application.GetResourceStream(uri);
-            if (streamInfo?.Stream != null)
-            {
-                using var s = streamInfo.Stream;
-                Icon = BitmapFrame.Create(s, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
-                return;
-            }
-        }
-        catch { }
-
-        try
-        {
-            // 2. Try extracting from running process module/executable
-            string? exePath = Environment.ProcessPath;
-            if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
-            {
-                ExtractIconEx(exePath, 0, out IntPtr hLarge, out _, 1);
-                if (hLarge != IntPtr.Zero)
-                {
-                    Icon = Imaging.CreateBitmapSourceFromHIcon(
-                        hLarge,
-                        Int32Rect.Empty,
-                        BitmapSizeOptions.FromEmptyOptions());
-                    DestroyIcon(hLarge);
-                    return;
-                }
-            }
-        }
-        catch { }
-
-        try
-        {
-            // 3. Fallback to app.ico alongside the binary
-            string? baseDir = AppDomain.CurrentDomain.BaseDirectory;
-            if (!string.IsNullOrEmpty(baseDir))
-            {
-                string icoPath = Path.Combine(baseDir, "app.ico");
-                if (File.Exists(icoPath))
-                {
-                    Icon = BitmapFrame.Create(
-                        new Uri(icoPath, UriKind.Absolute),
-                        BitmapCreateOptions.None,
-                        BitmapCacheOption.OnLoad);
-                }
-            }
-        }
-        catch { }
     }
 
     #endregion

@@ -9,6 +9,11 @@ param(
     [string]$Version = "1.0.0"
 )
 
+# All paths below are relative to the repository root, wherever the script is started from.
+# The caller's location is restored at the end (the finally block also runs on exit).
+Push-Location -LiteralPath $PSScriptRoot
+try {
+
 # Stop any running CRDLightweightARM instances so single-file bundle overwrite never fails
 $running = Get-Process -Name "CRDLightweightARM*" -ErrorAction SilentlyContinue
 if ($running) {
@@ -65,6 +70,11 @@ if ($PublishAll -or $BuildInstallers) {
     Write-Host "==========================================================" -ForegroundColor Cyan
     Write-Host "Building Full (.NET Included) & Light (.NET Excluded) Dist" -ForegroundColor Cyan
     Write-Host "==========================================================" -ForegroundColor Cyan
+
+    # Start from empty output folders so stale files never end up in the installers or zips.
+    foreach ($dir in "./dist", "./dist-light", "./dist-installers") {
+        if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
+    }
 
     # 1. Full Self-Contained (.NET Included)
     Write-Host "1/4 Publishing Full ARM64 (Self-Contained)..." -ForegroundColor Yellow
@@ -134,4 +144,8 @@ Invoke-CodeSign "src\CRDLightweightARM\bin\Release\net9.0-windows\$targetRid\CRD
 if ($Run) {
     Write-Host "Launching Chrome Remote Desktop Lightweight ($Arch)..." -ForegroundColor Green
     & $DotnetPath run --project $Project -c Release -r $targetRid
+}
+
+} finally {
+    Pop-Location
 }
