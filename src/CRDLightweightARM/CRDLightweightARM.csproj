@@ -6,29 +6,36 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
-    <ApplicationTitle>Chrome Remote Desktop - Lightweight ARM</ApplicationTitle>
+    <!-- Internal name kept so existing installs, settings (%LOCALAPPDATA%\CRDLightweightARM) and the installer keep working. -->
     <AssemblyName>CRDLightweightARM</AssemblyName>
     <RootNamespace>CRDLightweightARM</RootNamespace>
+    <Product>Multi-Instance CRD</Product>
+    <AssemblyTitle>Multi-Instance CRD</AssemblyTitle>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <!-- Optimized for Windows on ARM64 Snapdragon X Plus and x64 -->
     <RuntimeIdentifiers>win-arm64;win-x64</RuntimeIdentifiers>
-    <!-- Strip satellite resource folders to eliminate bloat -->
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- Keep release output lean: no .pdb or package XML docs next to the app. -->
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+    <PublishDocumentationFiles>false</PublishDocumentationFiles>
+    <PublishReferencesDocumentationFiles>false</PublishReferencesDocumentationFiles>
+    <AllowedReferenceRelatedFileExtensions>.pdb</AllowedReferenceRelatedFileExtensions>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Core WebView2 for WebRTC rendering -->
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3124.44" />
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="crd-mediator.js">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </EmbeddedResource>
+    <!-- Embedded only: a loose copy next to the exe could be swapped to inject script into signed-in sessions. -->
+    <EmbeddedResource Include="crd-mediator.js" />
     <Resource Include="app.ico" />
-    <None Include="app.ico">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
   </ItemGroup>
+
+  <!-- The WebView2 package also references a WinForms control this WPF app never loads. -->
+  <Target Name="DropWebView2WinForms" BeforeTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <Reference Remove="@(Reference)" Condition="'%(Filename)' == 'Microsoft.Web.WebView2.WinForms'" />
+    </ItemGroup>
+  </Target>
 
 </Project>

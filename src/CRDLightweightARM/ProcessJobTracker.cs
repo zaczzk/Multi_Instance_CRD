@@ -27,6 +27,9 @@ public static class ProcessJobTracker
 
     private const int JobObjectExtendedLimitInformation = 9;
     private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
+    // Lets the app deliberately start processes outside the job (links opened in the default browser).
+    // WebView2 child processes are not started with breakaway, so they stay in the job.
+    private const uint JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x0800;
 
     private static IntPtr _jobHandle = IntPtr.Zero;
 
@@ -77,7 +80,7 @@ public static class ProcessJobTracker
             {
                 BasicLimitInformation = new JOBOBJECT_BASIC_LIMIT_INFORMATION
                 {
-                    LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                    LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK
                 }
             };
 

@@ -1,134 +1,88 @@
-using System;
-using System.IO;
-using System.Text;
 using System.Threading;
 using System.Windows;
-using System.Windows.Interop;
-using CRDLightweightARM.Hardware;
-using CRDLightweightARM.NativeProtocol;
 
 namespace CRDLightweightARM;
 
 public partial class App : Application
 {
+    private const string MutexName = "CRDLightweightARM_SingleInstanceMutex";
+    private const string ShowEventName = "CRDLightweightARM_ShowExistingInstance";
+
     private static Mutex? _mutex;
+    private EventWaitHandle? _showEvent;
+    private bool _mainWindowLoaded;
 
     protected override void OnStartup(StartupEventArgs e)
     {
-        DispatcherUnhandledException += (s, args) =>
-        {
-            try
-            {
-                string logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CRDLightweightARM");
-                Directory.CreateDirectory(logDir);
-                string logPath = Path.Combine(logDir, "crash.log");
-                File.WriteAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] DispatcherUnhandledException:\n{args.Exception}\n");
-                MessageBox.Show($"CRD encountered an error:\n\n{args.Exception.Message}\n\nDetails saved to: {logPath}", "CRD Startup Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            catch { }
-            args.Handled = true;
-            Shutdown(1);
-        };
-
-        AppDomain.CurrentDomain.UnhandledException += (s, args) =>
-        {
-            try
-            {
-                string logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CRDLightweightARM");
-                Directory.CreateDirectory(logDir);
-                string logPath = Path.Combine(logDir, "crash.log");
-                File.WriteAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] AppDomain UnhandledException:\n{args.ExceptionObject}\n");
-            }
-            catch { }
-        };
-
-        if (e.Args.Length > 0 && Array.Exists(e.Args, a => a.Equals("--self-test", StringComparison.OrdinalIgnoreCase)))
-        {
-            int code = RunHardwareAndProtocolSelfTest();
-            Environment.Exit(code);
-            return;
-        }
-
-        ProcessJobTracker.Initialize();
-
-        const string appName = "CRDLightweightARM_SingleInstanceMutex";
-        _mutex = new Mutex(true, appName, out bool createdNew);
-
+        _mutex = new Mutex(true, MutexName, out bool createdNew);
         if (!createdNew)
         {
-            // Already running - exit duplicate instance
-            MessageBox.Show(
-                "Chrome Remote Desktop Lightweight ARM is already running.\nCheck your system tray or active windows.",
-                "Already Running",
-                MessageBoxButton.OK,
-                MessageBoxImage.Information
-            );
-            Current.Shutdown();
+            // Already running: ask the existing instance to come to the front, then quit.
+            try
+            {
+                using var existing = EventWaitHandle.OpenExisting(ShowEventName);
+                // This process was just started by the user, so it may hand its right to take the foreground over.
+                NativeMethods.AllowSetForegroundWindow(NativeMethods.ASFW_ANY);
+                existing.Set();
+            }
+            catch { }
+            Shutdown();
             return;
         }
 
+        DispatcherUnhandledException += (_, args) =>
+        {
+            CrashLog.Write("Unhandled UI exception", args.Exception);
+            args.Handled = true;
+
+            // Errors after startup are logged and survived so one bad WebView event can't close every session.
+            if (!_mainWindowLoaded)
+            {
+                MessageBox.Show(
+                    $"Multi-Instance CRD could not start:\n\n{args.Exception.Message}\n\nDetails: {CrashLog.FilePath}",
+                    "Multi-Instance CRD", MessageBoxButton.OK, MessageBoxImage.Error);
+                Shutdown(1);
+            }
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, args) => CrashLog.Write("Unhandled exception", args.ExceptionObject);
+        TaskScheduler.UnobservedTaskException += (_, args) =>
+        {
+            CrashLog.Write("Unobserved task exception", args.Exception);
+            args.SetObserved();
+        };
+
+        ProcessJobTracker.Initialize();
         base.OnStartup(e);
+
         var mainWindow = new MainWindow();
         MainWindow = mainWindow;
+        mainWindow.Loaded += (_, _) => _mainWindowLoaded = true;
         mainWindow.Show();
+
+        ListenForShowRequests(mainWindow);
     }
 
-    private static int RunHardwareAndProtocolSelfTest()
+    private void ListenForShowRequests(MainWindow window)
     {
-        var sb = new StringBuilder();
-        try
+        _showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName);
+        var thread = new Thread(() =>
         {
-            // 1. Verify SnapdragonOryonGovernor
-            var gov = SnapdragonOryonGovernor.Instance;
-            bool promoted = gov.PromoteMainThreadForLowLatency();
-            sb.AppendLine($"[1/5] SnapdragonOryonGovernor: Badge='{gov.HardwareBadge}' | Oryon={gov.IsSnapdragonOryon} | Adreno={gov.IsAdrenoGpu} | MMCSS_Promoted={promoted}");
+            try
+            {
+                while (_showEvent.WaitOne())
+                {
+                    Dispatcher.BeginInvoke(window.ShowFromOtherInstance);
+                }
+            }
+            catch (ObjectDisposedException) { }
+        })
+        { IsBackground = true, Name = "ShowInstanceListener" };
+        thread.Start();
+    }
 
-            // 2. Verify DisplayTopologyDetector
-            var topo = DisplayTopologyDetector.DetectTopology();
-            var full = DisplayTopologyDetector.GetFullBleedResolution();
-            var split = DisplayTopologyDetector.GetCockpitSplitResolution();
-            sb.AppendLine($"[2/5] DisplayTopologyDetector: Physical={topo.PhysicalWidth}x{topo.PhysicalHeight} ({topo.AspectRatio}) @ {topo.RefreshRateHz}Hz, {topo.DpiX} DPI | FullBleed={full.Width}x{full.Height} | CockpitSplit={split.Width}x{split.Height}");
-
-            // 3. Verify ChromotingProtobuf Round-Trip (ClientResolution, VideoLayout, VideoControl, USB HID Chords)
-            var sync = ChromotingProtobuf.BuildNativeResolutionSyncMessages(full.Width, full.Height, (int)full.Dpi, 0, topo.RefreshRateHz, false);
-            var decRes = ControlMessage.Decode(sync.ClientResolutionBytes, false);
-            var decLayout = ControlMessage.Decode(sync.VideoLayoutBytes, false);
-            var decCtrl = ControlMessage.Decode(sync.VideoControlBytes, false);
-            var cadEvents = UsbHidKeycodeMapper.BuildChordEventMessages(UsbHidKeycodeMapper.SystemChord.CtrlAltDel, false);
-            sb.AppendLine($"[3/5] ChromotingProtobuf: ClientRes={decRes.ClientResolution?.DipsWidth}x{decRes.ClientResolution?.DipsHeight} | VideoLayout={decLayout.VideoLayout?.VideoTracks[0].Width}x{decLayout.VideoLayout?.VideoTracks[0].Height} @ {decLayout.VideoLayout?.VideoTracks[0].XDpi} DPI | VideoControl_TargetFps={decCtrl.VideoControl?.TargetFramerate} | CAD_Events={cadEvents.Count}");
-
-            // 4. Verify SPAKE2 Curve25519 Handshake & Mutual Verification Hash
-            byte[] secret = Spake2Authenticator.DerivePinSharedSecret("host-uuid-snapdragon-x", "849201");
-            var alice = new Spake2Authenticator.Session(Spake2Authenticator.Session.SessionRole.Alice, "client@ftl.chromoting.com", "host@ftl.chromoting.com", secret);
-            var bob = new Spake2Authenticator.Session(Spake2Authenticator.Session.SessionRole.Bob, "host@ftl.chromoting.com", "client@ftl.chromoting.com", secret);
-            byte[] msgA = alice.GenerateMessage();
-            byte[] msgB = bob.GenerateMessage();
-            byte[] dummyCert = new byte[] { 0x30, 0x82, 0x01, 0x0A, 0x02, 0x01, 0x01 };
-            alice.ProcessPeerMessage(msgB, dummyCert);
-            bob.ProcessPeerMessage(msgA, dummyCert);
-            bool aliceVerifiedBob = alice.VerifyPeerHash(bob.GetOutgoingVerificationHash());
-            bool bobVerifiedAlice = bob.VerifyPeerHash(alice.GetOutgoingVerificationHash());
-            sb.AppendLine($"[4/5] Spake2Authenticator (Ed25519/Curve25519): AliceVerifiedBob={aliceVerifiedBob} | BobVerifiedAlice={bobVerifiedAlice}");
-
-            // 5. Verify D3D11AdrenoPresenter Hardware Video Device & SwapChain on Adreno X1-45
-            var testWin = new Window { Width = 320, Height = 200, WindowStyle = WindowStyle.None, ShowInTaskbar = false, Opacity = 0 };
-            var hwnd = new WindowInteropHelper(testWin).EnsureHandle();
-            using var presenter = new D3D11AdrenoPresenter();
-            presenter.Initialize(hwnd, 320, 200, enableTearing: true, enableWaitableObject: true);
-            byte[] nv12Frame = new byte[320 * 200 * 3 / 2];
-            presenter.PresentNV12Buffer(nv12Frame, 320, 200, vsync: false);
-            sb.AppendLine($"[5/5] D3D11AdrenoPresenter: Initialized={presenter.IsInitialized} | Adapter='{presenter.AdapterDescription}' | IsAdrenoGpu={presenter.IsAdrenoGpu} | TearingSupported={presenter.IsTearingSupported} | NV12_Presented=True");
-
-            gov.RevertMainThreadPromotion();
-
-            File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "self-test-report.txt"), sb.ToString());
-            return (promoted && aliceVerifiedBob && bobVerifiedAlice && presenter.IsInitialized) ? 0 : 1;
-        }
-        catch (Exception ex)
-        {
-            sb.AppendLine($"[ERROR] {ex}");
-            File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "self-test-report.txt"), sb.ToString());
-            return 2;
-        }
+    protected override void OnExit(ExitEventArgs e)
+    {
+        _showEvent?.Dispose();
+        base.OnExit(e);
     }
 }
